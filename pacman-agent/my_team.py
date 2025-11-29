@@ -298,18 +298,35 @@ class OmniReflexCaptureAgent(CaptureAgent):
     def closest_ghost_position(self, game_state, invasion=False):
         enemies = self.get_opponents(game_state)
         my_pos = game_state.get_agent_state(self.index).get_position()
+        my_pos = (int(my_pos[0]), int(my_pos[1]))
         noisy = game_state.get_agent_distances()
         walls = game_state.get_walls()
+        #print(walls)
         width = walls.width
         height = walls.height
         best_dist = 9999
 
         # fallback position
+        best_pos = None
         if self.red:
-            best_pos = (width, height // 2)
+            # start from right side (width-1) and move left
+            for x in range(width - 1, -1, -1):
+                for y in range(height):
+                    if not walls[x][y]:
+                        best_pos = (x, y)
+                        break
+                if best_pos:
+                    break
         else:
-            best_pos = (1, height // 2)
-
+            # start from left side (0) and move right
+            for x in range(width):
+                for y in range(height):
+                    if not walls[x][y]:
+                        best_pos = (x, y)
+                        break
+                if best_pos:
+                    break
+        #print(f"print 1 {best_pos} {my_pos}")
         for index in enemies:
             s = game_state.get_agent_state(index)
             # invasion=True  → only track invaders (enemy Pacman)
@@ -365,6 +382,13 @@ class OmniReflexCaptureAgent(CaptureAgent):
             if dist < best_dist:
                 best_dist = dist
                 best_pos = pos
+        #print(f"print 2{best_pos} {my_pos}")
+        x, y = best_pos
+        x = min(max(int(x), 0), width - 1)
+        y = min(max(int(y), 0), height - 1)
+        if not walls[x][y]:
+            best_pos = (x, y)
+
         return best_pos
 
 
@@ -405,15 +429,15 @@ class OmniReflexCaptureAgent(CaptureAgent):
         c_evaluation = -(dead_end_penalty * 1/(ghost_dist+1)) - stop_penalty # Attack precautions
         d_evaluation = -min_team_distance # Home_Food distance - easy way to find home (change to invader maybe?)
         # eval e doesnt work.
-        e_evaluation = -100 if ghost_dist_f <= 1 else 0#abs(old_pos[0] - my_pos[0]) + abs(old_pos[1] - my_pos[1]) > 2 else 0 # suicide prevention - Doesnt work!
+        e_evaluation = -100 if abs(old_pos[0] - my_pos[0]) + abs(old_pos[1] - my_pos[1]) > 2 else 0 # suicide prevention - Doesnt work!
         # if e_evaluation < 0:
         #     print(f"{scared_enemy} {c_evaluation} {e_evaluation} {old_pos} {my_pos} {action}")
         evaluation = a_evaluation + c_evaluation * scared_enemy + e_evaluation
         flee = 0
         # if e_scared_time > 3:
         #     safety_bool = 1
-        if ghost_dist == 1 and action != "Stop":
-            print(f"{scared_enemy} {a_evaluation} {c_evaluation} {e_evaluation} {dead_end_penalty} {ghost_dist} {ghost_dist_f} {action} {evaluation} {my_pos} {old_pos}")
+        #if ghost_dist == 1 and action != "Stop":
+            #print(f"{scared_enemy} {a_evaluation} {c_evaluation} {e_evaluation} {dead_end_penalty} {ghost_dist} {ghost_dist_f} {action} {evaluation} {my_pos} {old_pos}")
         if self.flee_timer > 0: # We have already decided to flee - execute
             # This is decided by the food risk tradeoff - roughly - if we carry a lot we flee.
             flee =  - 1
@@ -456,6 +480,7 @@ class OmniReflexCaptureAgent(CaptureAgent):
             if self.on_home_ground(successor):
                 invad_pos = self.closest_ghost_position(game_state, False)
                 #print(invad_pos)
+                print(f"print 3 {my_pos} {invad_pos}")
                 evaluation_a = -self.get_maze_distance(my_pos, invad_pos) - min_team_distance * 0.8
                 evaluation_c = -self.border_bias(successor)
             # elif self.switch > 0:
@@ -513,8 +538,8 @@ class OmniReflexCaptureAgent(CaptureAgent):
             if self.offense:
                 self.switch -= 1
         food_left = len(self.get_food(game_state).as_list())
-        if self.chase_timer > 0:
-            print(best_actions)
+        # if self.chase_timer > 0:
+        #     print(best_actions)
         if food_left <= 2:
             best_dist = 9999 # improve logic or switch to defense
             best_action = None
