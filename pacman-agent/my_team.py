@@ -137,6 +137,8 @@ class OmniReflexCaptureAgent(CaptureAgent):
         self.flee_timer = 0 # How long should we flee
         self.chase_timer = 0 # How long have we been chased
         self.switch = 0 # How long should we switch attacker defender role
+        self.recent_positions = []
+        self.carrying = 0
 
     def register_initial_state(self, game_state):
         super().register_initial_state(game_state)
@@ -181,7 +183,7 @@ class OmniReflexCaptureAgent(CaptureAgent):
             s = game_state.get_agent_state(index)
             real_pos = game_state.get_agent_position(index)
             border_x = width // 2
-            threat_factor = 0.0
+            threat_factor = 0.1
             if not s.is_pacman:
                 threat_factor = 1.0
             if real_pos is not None:
@@ -383,17 +385,18 @@ class OmniReflexCaptureAgent(CaptureAgent):
                 best_dist = dist
                 best_pos = pos
         #print(f"print 2{best_pos} {my_pos}")
-        x, y = best_pos
-        x = min(max(int(x), 0), width - 1)
-        y = min(max(int(y), 0), height - 1)
-        if not walls[x][y]:
-            best_pos = (x, y)
+        # x, y = best_pos
+        # x = min(max(int(x), 0), width - 1)
+        # y = min(max(int(y), 0), height - 1)
+        # if not walls[x][y]:
+        #     best_pos = (x, y)
 
         return best_pos
 
-
     def offensive(self, game_state, action):
         # Problem with pincer scenarios and no deadend scenarios
+        # Add prevention for softlock - repeating game_states - improve to accumulate
+        # Add pincerdetection / better ghost avoidance
         old_pos = game_state.get_agent_state(self.index).get_position()
         successor = self.get_successor(game_state, action)
         my_pos = successor.get_agent_state(self.index).get_position()
@@ -403,7 +406,7 @@ class OmniReflexCaptureAgent(CaptureAgent):
         foods = self.get_food(game_state).as_list()
         stop_penalty = 0
         if action == "Stop":
-            stop_penalty = 100
+            stop_penalty = 50
         min_distance = min([self.get_maze_distance(my_pos, food) for food in foods])
         team_foods = self.get_food_you_are_defending(game_state).as_list()
         min_team_distance = min([self.get_maze_distance(my_pos, food) for food in team_foods])
@@ -423,21 +426,27 @@ class OmniReflexCaptureAgent(CaptureAgent):
             chase_bool = -0.5
         else:
             chase_bool = 0
+        cycle_penalty = 0
+        #if my_pos in self.recent_positions[-3:]:
+            #cycle_penalty = -0.3
 
         a_evaluation = -min_distance 
         b_evaluation, safety_bool = self.food_risk(my_pos, game_state) # Tradeoff to bring food home
         c_evaluation = -(dead_end_penalty * 1/(ghost_dist+1)) - stop_penalty # Attack precautions
         d_evaluation = -min_team_distance # Home_Food distance - easy way to find home (change to invader maybe?)
-        # eval e doesnt work.
-        e_evaluation = -100 if abs(old_pos[0] - my_pos[0]) + abs(old_pos[1] - my_pos[1]) > 2 else 0 # suicide prevention - Doesnt work!
+        e_evaluation = -100 if (abs(old_pos[0] - my_pos[0]) + abs(old_pos[1] - my_pos[1])) > 2 else 0 # suicide prevention
+        e_evaluation += cycle_penalty
+        if ghost_dist_f < 2 and scared_enemy == 1: 
+            e_evaluation -= 75
         # if e_evaluation < 0:
         #     print(f"{scared_enemy} {c_evaluation} {e_evaluation} {old_pos} {my_pos} {action}")
         evaluation = a_evaluation + c_evaluation * scared_enemy + e_evaluation
         flee = 0
         # if e_scared_time > 3:
         #     safety_bool = 1
-        #if ghost_dist == 1 and action != "Stop":
-            #print(f"{scared_enemy} {a_evaluation} {c_evaluation} {e_evaluation} {dead_end_penalty} {ghost_dist} {ghost_dist_f} {action} {evaluation} {my_pos} {old_pos}")
+        #if ghost_dist == 1 and action != "Stop" or (abs(old_pos[0] - my_pos[0]) + abs(old_pos[1] - my_pos[1])) > 2:
+        if ghost_dist <= 3:
+            print(f"{scared_enemy} {a_evaluation} {c_evaluation} {e_evaluation} {dead_end_penalty} {round(ghost_dist,2)} {round(ghost_dist_f,2)} {action} {evaluation} {my_pos} {old_pos}")
         if self.flee_timer > 0: # We have already decided to flee - execute
             # This is decided by the food risk tradeoff - roughly - if we carry a lot we flee.
             flee =  - 1
@@ -451,10 +460,8 @@ class OmniReflexCaptureAgent(CaptureAgent):
                 chase_bool = -self.chase_timer
                 side_reset = True
 
-        # suicidal ghost? Check why.
         # Add fix for ghost on heels - pill search or reset to defense for about 10+ turns (how to ensure this? - use min)
         return evaluation, safety_bool, chase_bool, flee, side_reset  # call defensive
-        # if fled because of imbalance attack immediatly after side reset
     
     def defensive(self, game_state, action):
         # integrate switch for scared logic
@@ -476,11 +483,11 @@ class OmniReflexCaptureAgent(CaptureAgent):
         if not invaders: # list empty
             team_foods = self.get_food_you_are_defending(game_state).as_list()
             min_team_distance = [self.get_maze_distance(my_pos, food) for food in team_foods]
-            min_team_distance = sum(min_team_distance) / len(min_team_distance)
+            min_team_distance = sum(min_team_distance) / max(len(min_team_distance),1)
             if self.on_home_ground(successor):
                 invad_pos = self.closest_ghost_position(game_state, False)
                 #print(invad_pos)
-                print(f"print 3 {my_pos} {invad_pos}")
+                #print(f"print 3 {my_pos} {invad_pos}")
                 evaluation_a = -self.get_maze_distance(my_pos, invad_pos) - min_team_distance * 0.8
                 evaluation_c = -self.border_bias(successor)
             # elif self.switch > 0:
@@ -551,6 +558,15 @@ class OmniReflexCaptureAgent(CaptureAgent):
                     best_action = action
                     best_dist = dist
             return best_action
+        cur_pos = game_state.get_agent_state(self.index).get_position()
+        food_carry = game_state.get_agent_state(self.index).num_carrying
+        if food_carry != self.carrying:
+            self.carrying = food_carry
+            self.recent_positions = []
+        if len(self.recent_positions) > 6:
+            self.recent_positions.pop(0)
+
+        self.recent_positions.append(cur_pos)
         return random.choice(best_actions)
     
     def get_successor(self, game_state, action):
