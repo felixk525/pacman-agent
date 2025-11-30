@@ -137,8 +137,6 @@ class OmniReflexCaptureAgent(CaptureAgent):
         self.flee_timer = 0 # How long should we flee
         self.chase_timer = 0 # How long have we been chased
         self.switch = 0 # How long should we switch attacker defender role
-        self.patrol_point = None # Cached patrol position for defenders
-        
 
     def register_initial_state(self, game_state):
         super().register_initial_state(game_state)
@@ -300,18 +298,35 @@ class OmniReflexCaptureAgent(CaptureAgent):
     def closest_ghost_position(self, game_state, invasion=False):
         enemies = self.get_opponents(game_state)
         my_pos = game_state.get_agent_state(self.index).get_position()
+        my_pos = (int(my_pos[0]), int(my_pos[1]))
         noisy = game_state.get_agent_distances()
         walls = game_state.get_walls()
+        #print(walls)
         width = walls.width
         height = walls.height
         best_dist = 9999
 
         # fallback position
+        best_pos = None
         if self.red:
-            best_pos = (width, height // 2)
+            # start from right side (width-1) and move left
+            for x in range(width - 1, -1, -1):
+                for y in range(height):
+                    if not walls[x][y]:
+                        best_pos = (x, y)
+                        break
+                if best_pos:
+                    break
         else:
-            best_pos = (1, height // 2)
-
+            # start from left side (0) and move right
+            for x in range(width):
+                for y in range(height):
+                    if not walls[x][y]:
+                        best_pos = (x, y)
+                        break
+                if best_pos:
+                    break
+        #print(f"print 1 {best_pos} {my_pos}")
         for index in enemies:
             s = game_state.get_agent_state(index)
             # invasion=True  → only track invaders (enemy Pacman)
@@ -367,6 +382,13 @@ class OmniReflexCaptureAgent(CaptureAgent):
             if dist < best_dist:
                 best_dist = dist
                 best_pos = pos
+        #print(f"print 2{best_pos} {my_pos}")
+        x, y = best_pos
+        x = min(max(int(x), 0), width - 1)
+        y = min(max(int(y), 0), height - 1)
+        if not walls[x][y]:
+            best_pos = (x, y)
+
         return best_pos
 
 
@@ -387,33 +409,35 @@ class OmniReflexCaptureAgent(CaptureAgent):
         min_team_distance = min([self.get_maze_distance(my_pos, food) for food in team_foods])
         dead_end_penalty = self.local_mobility(successor, old_pos, my_pos, max_depth=7) # max depth detected x 9 -> 54 limit in this case
         ghost_dist, e_index = self.ghost_distance(game_state)
+        ghost_dist_f, _ = self.ghost_distance(successor)
         e_scared_time = game_state.get_agent_state(e_index).scared_timer
         if e_scared_time > 3:
             scared_enemy = 0
 
-            print("ignore enemies")
+            #print("ignore enemies")
         else:
             scared_enemy = 1
-        if ghost_dist == 1:
-            chase_bool = 1
+        if ghost_dist > 0 and ghost_dist <= 2:
+            chase_bool = 1/ghost_dist
         elif self.chase_timer > 0:
             chase_bool = -0.5
         else:
             chase_bool = 0
+
         a_evaluation = -min_distance 
         b_evaluation, safety_bool = self.food_risk(my_pos, game_state) # Tradeoff to bring food home
         c_evaluation = -(dead_end_penalty * 1/(ghost_dist+1)) - stop_penalty # Attack precautions
         d_evaluation = -min_team_distance # Home_Food distance - easy way to find home (change to invader maybe?)
         # eval e doesnt work.
-        e_evaluation = -100 if ghost_dist == 0 else 0#abs(old_pos[0] - my_pos[0]) + abs(old_pos[1] - my_pos[1]) > 2 else 0 # suicide prevention - Doesnt work!
-        if e_evaluation > 0:
-            print(f"{scared_enemy} {c_evaluation} {e_evaluation} {old_pos} {my_pos} {action}")
+        e_evaluation = -100 if abs(old_pos[0] - my_pos[0]) + abs(old_pos[1] - my_pos[1]) > 2 else 0 # suicide prevention - Doesnt work!
+        # if e_evaluation < 0:
+        #     print(f"{scared_enemy} {c_evaluation} {e_evaluation} {old_pos} {my_pos} {action}")
         evaluation = a_evaluation + c_evaluation * scared_enemy + e_evaluation
         flee = 0
         # if e_scared_time > 3:
         #     safety_bool = 1
-        if ghost_dist == 1 and action != "Stop":
-            print(f"{scared_enemy} {c_evaluation} {e_evaluation} {dead_end_penalty} {ghost_dist} {action} {evaluation}")
+        #if ghost_dist == 1 and action != "Stop":
+            #print(f"{scared_enemy} {a_evaluation} {c_evaluation} {e_evaluation} {dead_end_penalty} {ghost_dist} {ghost_dist_f} {action} {evaluation} {my_pos} {old_pos}")
         if self.flee_timer > 0: # We have already decided to flee - execute
             # This is decided by the food risk tradeoff - roughly - if we carry a lot we flee.
             flee =  - 1
@@ -456,6 +480,7 @@ class OmniReflexCaptureAgent(CaptureAgent):
             if self.on_home_ground(successor):
                 invad_pos = self.closest_ghost_position(game_state, False)
                 #print(invad_pos)
+                print(f"print 3 {my_pos} {invad_pos}")
                 evaluation_a = -self.get_maze_distance(my_pos, invad_pos) - min_team_distance * 0.8
                 evaluation_c = -self.border_bias(successor)
             # elif self.switch > 0:
@@ -470,232 +495,6 @@ class OmniReflexCaptureAgent(CaptureAgent):
             evaluation_b = -self.get_maze_distance(my_pos, invad_pos)
             evaluation = evaluation_b + eat_reward # chase & cutoff
         return evaluation, 0 # evaluation, various values
-    
-    def get_defensive_features(self, game_state, action):
-        features = util.Counter()
-        successor = self.get_successor(game_state, action)
-
-        my_state = successor.get_agent_state(self.index)
-        my_pos = my_state.get_position()
-
-        # Computes whether we're on defense (1) or offense (0)
-        features['on_defense'] = 1
-        if my_state.is_pacman: 
-            features['on_defense'] = 0
-
-        # Computes distance to invaders we can see
-        enemies = [successor.get_agent_state(i) for i in self.get_opponents(successor)]
-        invaders = [a for a in enemies if a.is_pacman and a.get_position() is not None]
-        features['num_invaders'] = len(invaders)
-        
-        if len(invaders) > 0:
-            # Prioritize invaders based on depth in our territory
-            border_x = self.home_border_x(game_state)
-            invader_priorities = []
-            
-            for invader in invaders:
-                inv_pos = invader.get_position()
-                
-                # Calculate how deep the invader is in our territory
-                if self.red:
-                    depth_in_territory = border_x - inv_pos[0]  # Higher = deeper
-                else:
-                    depth_in_territory = inv_pos[0] - border_x -1 # Higher = deeper
-                
-                # Only consider invaders actually in our territory (depth > 0)
-                if depth_in_territory <= 0:
-                    continue  # Skip invaders not in our territory
-                
-                dist_to_me = self.get_maze_distance(my_pos, inv_pos)
-                
-                # Prioritize: deeper invaders get higher priority (lower score)
-                # Also consider invaders carrying food
-                food_carrying = invader.num_carrying
-                
-                # Priority score: lower is more urgent
-                # Depth is most important, then food carrying, then distance
-                # Balanced weights: depth matters most, but distance is meaningful
-                priority = -depth_in_territory * 100 - food_carrying * 30 + dist_to_me * 2
-                
-                invader_priorities.append((priority, invader, dist_to_me))
-            if invader_priorities:
-                # Sort by priority (most urgent first)
-                invader_priorities.sort(key=lambda x: x[0])
-                
-                # Use the most urgent invader
-                most_urgent_invader = invader_priorities[0][1]
-                features['invader_distance'] = invader_priorities[0][2]
-            
-                # Block escape route - get between invader and their border
-                invader_pos = most_urgent_invader.get_position()
-                border_x = game_state.data.layout.width // 2
-                walls = game_state.get_walls()
-                
-                # Calculate blocking position (on the border between invader and their home)
-                if self.red:
-                    # Red defends left side, want to be between invader and right border
-                    blocking_x = border_x - 4
-                else:
-                    # Blue defends right side, want to be between invader and left border
-                    blocking_x = border_x + 5
-                
-                # Find valid blocking position at same Y as invader
-                blocking_pos = (int(blocking_x), int(invader_pos[1]))
-                
-                # If blocking position is a wall, find nearest valid position
-                if walls[blocking_pos[0]][blocking_pos[1]]:
-                    # Search for valid positions near the blocking line
-                    min_dist = float('inf')
-                    best_pos = invader_pos
-                    for y in range(max(0, blocking_pos[1] - 3), min(walls.height, blocking_pos[1] + 4)):
-                        test_pos = (blocking_x, y)
-                        if not walls[test_pos[0]][test_pos[1]]:
-                            dist = abs(y - blocking_pos[1])
-                            if dist < min_dist:
-                                min_dist = dist
-                                best_pos = test_pos
-                    blocking_pos = best_pos
-                
-                features['blocking_distance'] = self.get_maze_distance(my_pos, blocking_pos)
-        
-        else:
-            # No invaders visible - patrol strategically
-            patrol_point = self.get_patrol_point(game_state)
-            features['patrol_distance'] = self.get_maze_distance(my_pos, patrol_point)
-        
-        # Defend capsules
-        capsules_defending = self.get_capsules_you_are_defending(successor)
-        if len(capsules_defending) > 0:
-            cap_dists = [self.get_maze_distance(my_pos, cap) for cap in capsules_defending]
-            min_cap_dist = min(cap_dists)
-            
-            # If invaders are near capsules, prioritize defending them
-            if len(invaders) > 0:
-                invader_to_cap_dists = [self.get_maze_distance(inv.get_position(), cap) 
-                                       for inv in invaders for cap in capsules_defending]
-                if len(invader_to_cap_dists) > 0 and min(invader_to_cap_dists) < 5:
-                    features['defend_capsule'] = min_cap_dist
-        
-        # Behavior when scared (enemy ate our capsule)
-        if my_state.scared_timer > 0:
-            features['scared'] = 1
-            # Flee from invaders when scared
-            if len(invaders) > 0:
-                invader_dists = [self.get_maze_distance(my_pos, inv.get_position()) for inv in invaders]
-                # Negative distance means we want to maximize it
-                features['flee_when_scared'] = -min(invader_dists)
-
-        # Anti-stuck mechanisms
-        if action == Directions.STOP: 
-            features['stop'] = 1
-        
-        rev = Directions.REVERSE[game_state.get_agent_state(self.index).configuration.direction]
-        if action == rev: 
-            features['reverse'] = 1
-        
-        # Penalize leaving our territory (becoming Pacman when we should defend)
-        if my_state.is_pacman:
-            features['left_territory'] = 1
-        
-        # Detect looping behavior - penalize repeated positions
-        prev_pos = game_state.get_agent_state(self.index).get_position()
-        if hasattr(self, 'position_history'):
-            self.position_history.append(prev_pos)
-            # Keep only last 8 positions
-            if len(self.position_history) > 8:
-                self.position_history.pop(0)
-            
-            # Check for loops - if current position appears multiple times recently
-            if len(self.position_history) >= 4:
-                position_counts = {}
-                for pos in self.position_history[-4:]:
-                    position_counts[pos] = position_counts.get(pos, 0) + 1
-                
-                # If we've been at my_pos multiple times in recent history
-                if my_pos in position_counts and position_counts[my_pos] >= 2:
-                    features['looping'] = position_counts[my_pos]
-        else:
-            self.position_history = [prev_pos]
-
-        return features
-
-    def get_defensive_weights(self, game_state, action):
-        """Dynamic weights based on whether agent is scared or not"""
-        my_state = game_state.get_agent_state(self.index)
-        
-        if my_state.scared_timer > 0:
-            # Defensive weights when scared - avoid invaders
-            return {
-                'on_defense': 200,
-                'flee_when_scared': 100,
-                'num_invaders': -500,
-                'scared': -1000,
-                'stop': -100,
-                'reverse': -2,
-                'left_territory': 300  # Penalty for leaving territory even when scared
-            }
-        else:
-            # Aggressive weights when not scared
-            return {
-                'num_invaders': -1000,      # Eliminate invaders (top priority)
-                'invader_distance': -700,    # Chase them down
-                'on_defense': 100,          # Stay on defensive side
-                'blocking_distance': -500,    # Get to blocking position
-                'defend_capsule': -600,      # Guard capsules when threatened
-                'patrol_distance': -1,      # Patrol when no threats
-                'stop': -20,               # Never stop
-                'reverse': -2,             # Avoid reversing
-                'looping': -50,             # Avoid looping behavior
-                'left_territory': -500      # Strong penalty for leaving territory
-            }
-
-    def get_patrol_point(self, game_state):
-        """Calculate optimal patrol position - near border where food is densest"""
-        if self.patrol_point is None:
-            food_defending = self.get_food_you_are_defending(game_state).as_list()
-            if len(food_defending) > 0:
-                walls = game_state.get_walls()
-                border_x = self.home_border_x(game_state)
-                
-                # Find the Y coordinate where most food is located
-                # Create a histogram of food positions by Y coordinate
-                y_food_count = {}
-                for food_x, food_y in food_defending:
-                    y_food_count[food_y] = y_food_count.get(food_y, 0) + 1
-                
-                # Find Y coordinate with most food
-                best_y = max(y_food_count.keys(), key=lambda y: y_food_count[y])
-                
-                # Set patrol point at border, aligned with food cluster
-                patrol_candidate = (border_x, best_y)
-                
-                # Ensure it's not a wall
-                if not walls[patrol_candidate[0]][patrol_candidate[1]]:
-                    self.patrol_point = patrol_candidate
-                else:
-                    # Search nearby Y positions if exact position is a wall
-                    for offset in range(1, 5):
-                        for dy in [offset, -offset]:
-                            test_y = best_y + dy
-                            if 0 <= test_y < walls.height:
-                                test_pos = (border_x, test_y)
-                                if not walls[test_pos[0]][test_pos[1]]:
-                                    self.patrol_point = test_pos
-                                    break
-                        if self.patrol_point is not None:
-                            break
-                    
-                    # If still not found, fallback to nearest food to border
-                    if self.patrol_point is None:
-                        self.patrol_point = min(food_defending, 
-                                               key=lambda f: abs(f[0] - border_x))
-            else:
-                # No food left, patrol at border center
-                border_x = self.home_border_x(game_state)
-                height = game_state.get_walls().height
-                self.patrol_point = (border_x, height // 2)
-        
-        return self.patrol_point
 
     def choose_action(self, game_state):
         #print(game_state) % walls, . = food, G Ghost, o pill, 
@@ -708,12 +507,8 @@ class OmniReflexCaptureAgent(CaptureAgent):
             values = {a: results[a][0] for a in actions}
 
         else:
-            features_dict = {a: self.get_defensive_features(game_state, a) for a in actions}
-            weights_dict = {a: self.get_defensive_weights(game_state, a) for a in actions}
-            # Recalculate values using feature-weight evaluation
-            values = {a: features_dict[a] * weights_dict[a] for a in actions}
-            results = {a: (values[a], 0) for a in actions}
-            
+            results = {a: self.defensive(game_state, a) for a in actions}
+            values = {a: results[a][0] for a in actions}
             if self.switch == 1:
                 print("Back to attacking")
 
@@ -743,8 +538,8 @@ class OmniReflexCaptureAgent(CaptureAgent):
             if self.offense:
                 self.switch -= 1
         food_left = len(self.get_food(game_state).as_list())
-        if self.chase_timer > 0:
-            print(best_actions)
+        # if self.chase_timer > 0:
+        #     print(best_actions)
         if food_left <= 2:
             best_dist = 9999 # improve logic or switch to defense
             best_action = None
@@ -777,7 +572,6 @@ class OmniReflexCaptureAgent(CaptureAgent):
         features = self.get_features(game_state, action)
         weights = self.get_weights(game_state, action)
         return features * weights
-    
     def get_features(self, game_state, action):
         """
         Returns a counter of features for the state
