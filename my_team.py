@@ -19,7 +19,7 @@ from contest.util import nearest_point
 #################
 
 def create_team(first_index, second_index, is_red,
-                first='OffensiveReflexAgent', second='DefensiveReflexAgent', num_training=0):
+                first='OmniReflexCaptureAgent', second='OmniReflexCaptureAgent', num_training=0):
     """
     This function should return a list of two agents that will form the
     team, initialized using firstIndex and secondIndex as their agent
@@ -34,7 +34,8 @@ def create_team(first_index, second_index, is_red,
     any extra arguments, so you should make sure that the default
     behavior is what you want for the nightly contest.
     """
-    return [eval(first)(first_index), eval(second)(second_index)]
+    return OmniReflexCaptureAgent(first_index, True), OmniReflexCaptureAgent(second_index, False)
+    #return [eval(first)(first_index), eval(second)(second_index)]
 
 
 ##########
@@ -120,6 +121,719 @@ class ReflexCaptureAgent(CaptureAgent):
         """
         return {'successor_score': 1.0}
 
+class OmniReflexCaptureAgent(CaptureAgent):
+    #TODO:
+    # Add pillseeker and according attackphase for both
+    # Defensive and attacker crossover for according points
+    # Defensive
+    # No pillseeker behavious on either side yet.
+
+    # Add safety for no food (both sides) and for no enemy on each field
+
+    def __init__(self, index, attacker, time_for_computing=.1):
+        super().__init__(index, time_for_computing)
+        self.offense = attacker
+        self.start = None
+        self.flee_timer = 0 # How long should we flee
+        self.chase_timer = 0 # How long have we been chased
+        self.switch = 0 # How long should we switch attacker defender role
+        self.recent_positions = []
+        self.carrying = 0
+        self.patrol_point = None
+
+    def register_initial_state(self, game_state):
+        super().register_initial_state(game_state)
+        self.distancer.get_maze_distances()
+        self.start = game_state.get_agent_position(self.index)
+
+    def local_mobility(self, game_state, old_pos, start_pos, max_depth=5):
+        walls = game_state.get_walls()
+        max_reached_depth = 0
+        visited = {start_pos, old_pos}
+        queue = [(start_pos, 1)]
+        while queue:
+            pos, depth = queue.pop(0)
+            max_reached_depth = max(max_reached_depth, depth)
+            if depth == max_depth:
+                continue
+            x, y = pos
+            for dx, dy in [(0,1),(0,-1),(1,0),(-1,0)]:
+                nx, ny = x+dx, y+dy
+                if walls[int(nx)][int(ny)]:
+                    continue
+                nxt = (nx, ny)
+                if nxt not in visited:
+                    visited.add(nxt)
+                    queue.append((nxt, depth+1))
+        if max_reached_depth < max_depth:
+            depth_penalty = (max_reached_depth)*9
+            return depth_penalty
+        return 0
+
+    def ghost_distance(self, game_state):
+        #also return index to use for the scared check
+        enemies = self.get_opponents(game_state)
+        my_pos = game_state.get_agent_state(self.index).get_position()
+        noisy = game_state.get_agent_distances()
+        walls = game_state.get_walls()
+        width = walls.width
+        height = walls.height
+        best_estimate = 9999
+        g_index = 0
+        for index in enemies:
+            s = game_state.get_agent_state(index)
+            real_pos = game_state.get_agent_position(index)
+            border_x = width // 2
+            threat_factor = 0.1
+            if not s.is_pacman:
+                threat_factor = 1.0
+            if real_pos is not None:
+                if s.is_pacman:
+                    dx = abs(real_pos[0] - border_x)
+                    threat_factor = 0.7 - 0.6 * (min(dx, 5) / 5.0)
+                dist = self.get_maze_distance(my_pos, real_pos)
+                if dist < best_estimate:
+                    best_estimate = dist
+                    g_index = index
+            else:
+                orig_n_dist = noisy[index]
+                noisy_dist = orig_n_dist
+                if noisy_dist is None:
+                    continue
+                if noisy_dist <= 14:
+                    if noisy_dist <= 5:
+                        noisy_dist = 7
+                    candidates = []
+                    for x in range(width):
+                        for y in range(height):
+                            if walls[x][y]: 
+                                continue
+                            manh = abs(x - my_pos[0]) + abs(y - my_pos[1])
+                            probablity = game_state.get_distance_prob(manh, orig_n_dist)
+                            if manh <= noisy_dist and manh >= noisy_dist -1:
+                                real = self.get_maze_distance(my_pos, (x, y))
+                                if real > 5:
+                                    candidates.append(real * probablity)
+                    if not candidates:
+                        continue
+                    # conservative estimate
+                    estimate = (sum(candidates)) * 0.8
+                    if estimate < best_estimate:
+                        best_estimate = estimate
+                        g_index = index
+        return best_estimate * 1 / threat_factor, g_index
+
+    def home_border_x(self, game_state):
+        width = game_state.get_walls().width
+        if self.red:
+            return width // 2 - 1
+        else:
+            return width // 2
+
+    def food_risk(self, pos, game_state):
+        foods = self.get_food(game_state).as_list()
+        team_foods = self.get_food_you_are_defending(game_state).as_list()
+        # x,y = pos
+        # mid_x = game_state.data.layout.width // 2
+        if not foods:
+            return 999 # we want to go home
+        food_enemies = len(foods)
+        food_team = len(team_foods)
+        if food_team == 0:
+            food_team = 1
+        factor_1 = game_state.get_agent_state(self.index).num_carrying # ~0-20
+        imbalance = max(0,(food_team - food_enemies)) + 30/food_team
+        imbalance = factor_1 * 18/food_team 
+        flee_val = 1
+        if imbalance > 10:
+            # if self.red:
+            #     factor_2 = x
+            # else:
+            #     factor_2 = game_state.data.layout.width - x
+            imbalance = -min([self.get_maze_distance(pos, food) for food in team_foods])
+            # Use maze distance and add timer
+            imbalance = imbalance #* factor_2
+            flee_val = -1
+        return imbalance, flee_val # balanced - imbalanced | ~0 - 2
+    
+    def on_home_ground(self, game_state):
+        x,y  = game_state.get_agent_state(self.index).get_position()
+        if x < self.home_border_x(game_state):
+            if self.red:
+                return True
+            else:
+                return False
+        else:
+            if self.red:
+                return False
+            else:
+                return True
+
+    def get_enemy_scared_times(self, game_state):
+        times = {}
+        for enemy in self.get_opponents(game_state):
+            st = game_state.get_agent_state(enemy)
+            times[enemy] = getattr(st, "scaredTimer", getattr(st, "scared_timer", 0))
+        return times
+
+    def border_bias(self, game_state):
+        # should return bias to stay on border -> enable easier trapping
+        # penalty for very close to border
+        x, y = game_state.get_agent_state(self.index).get_position()
+        borderx = self.home_border_x(game_state)
+        value = 0
+        if self.red:
+            if x >= borderx -2: #14 16
+                value = abs(x-(borderx-2)) * 4
+        else:
+            if x <= borderx +2:
+                value = abs(x-(borderx+2)) * 4
+        #consider multiple invaders - take min
+        return value
+    
+    def invader_distance(self, game_state):
+        return 0
+    
+    def trap_factor(self, game_state, e_index):
+        # should return how trapped the enemy is
+        return 0
+    
+    def closest_ghost_position(self, game_state, invasion=False):
+        enemies = self.get_opponents(game_state)
+        my_pos = game_state.get_agent_state(self.index).get_position()
+        my_pos = (int(my_pos[0]), int(my_pos[1]))
+        noisy = game_state.get_agent_distances()
+        walls = game_state.get_walls()
+        #print(walls)
+        width = walls.width
+        height = walls.height
+        best_dist = 9999
+
+        # fallback position
+        best_pos = None
+        if self.red:
+            # start from right side (width-1) and move left
+            for x in range(width - 1, -1, -1):
+                for y in range(height):
+                    if not walls[x][y]:
+                        best_pos = (x, y)
+                        break
+                if best_pos:
+                    break
+        else:
+            # start from left side (0) and move right
+            for x in range(width):
+                for y in range(height):
+                    if not walls[x][y]:
+                        best_pos = (x, y)
+                        break
+                if best_pos:
+                    break
+        #print(f"print 1 {best_pos} {my_pos}")
+        for index in enemies:
+            s = game_state.get_agent_state(index)
+            # invasion=True  → only track invaders (enemy Pacman)
+            # invasion=False → only track ghosts
+            if invasion:
+                if not s.is_pacman:
+                    continue  # skip ghosts
+            else:
+                if s.is_pacman:
+                    continue  # skip invaders
+
+            real_pos = game_state.get_agent_position(index)
+            # case 1: exact known position
+            if real_pos is not None:
+                dist = self.get_maze_distance(my_pos, real_pos)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_pos = real_pos
+                continue
+
+            # case 2: noisy sensor reading
+            orig_n_dist = noisy[index]
+            if orig_n_dist is None:
+                continue
+            noisy_dist = orig_n_dist
+            if noisy_dist <= 5:
+                noisy_dist = 7
+            candidates = []
+            for x in range(width):
+                for y in range(height):
+                    if walls[x][y]:
+                        continue
+
+                    manh = abs(x - my_pos[0]) + abs(y - my_pos[1])
+                    prob = game_state.get_distance_prob(manh, orig_n_dist)
+                    # ring check
+                    if noisy_dist - 1 <= manh <= noisy_dist:
+                        real_d = self.get_maze_distance(my_pos, (x, y))
+
+                        # ignore trivial positions
+                        if real_d > 5:
+                            candidates.append(((x, y), real_d, prob))
+            if not candidates:
+                continue
+
+            # score = real distance weighted by probability
+            best_candidate = min(
+                candidates,
+                key=lambda c: c[1] / max(c[2], 1e-6)
+            )
+            pos, dist, prob = best_candidate
+
+            if dist < best_dist:
+                best_dist = dist
+                best_pos = pos
+        #print(f"print 2{best_pos} {my_pos}")
+        # x, y = best_pos
+        # x = min(max(int(x), 0), width - 1)
+        # y = min(max(int(y), 0), height - 1)
+        # if not walls[x][y]:
+        #     best_pos = (x, y)
+
+        return best_pos
+
+    def offensive(self, game_state, action):
+        # Problem with pincer scenarios and no deadend scenarios
+        # Add prevention for softlock - repeating game_states - improve to accumulate
+        # Add pincerdetection / better ghost avoidance
+        old_pos = game_state.get_agent_state(self.index).get_position()
+        successor = self.get_successor(game_state, action)
+        my_pos = successor.get_agent_state(self.index).get_position()
+        x, y = old_pos
+        scared_time = game_state.get_agent_state(self.index).scared_timer
+        side_reset = False
+        foods = self.get_food(game_state).as_list()
+        stop_penalty = 0
+        if action == "Stop":
+            stop_penalty = 50
+        min_distance = min([self.get_maze_distance(my_pos, food) for food in foods])
+        team_foods = self.get_food_you_are_defending(game_state).as_list()
+        min_team_distance = min([self.get_maze_distance(my_pos, food) for food in team_foods])
+        dead_end_penalty = self.local_mobility(successor, old_pos, my_pos, max_depth=7) # max depth detected x 9 -> 54 limit in this case
+        ghost_dist, e_index = self.ghost_distance(game_state)
+        ghost_dist_f, _ = self.ghost_distance(successor)
+        e_scared_time = game_state.get_agent_state(e_index).scared_timer
+        if e_scared_time > 3:
+            scared_enemy = 0
+
+            #print("ignore enemies")
+        else:
+            scared_enemy = 1
+        if ghost_dist > 0 and ghost_dist <= 2:
+            chase_bool = 1/ghost_dist
+        elif self.chase_timer > 0:
+            chase_bool = -0.5
+        else:
+            chase_bool = 0
+        cycle_penalty = 0
+        #if my_pos in self.recent_positions[-3:]:
+            #cycle_penalty = -0.3
+
+        a_evaluation = -min_distance 
+        b_evaluation, safety_bool = self.food_risk(my_pos, game_state) # Tradeoff to bring food home
+        c_evaluation = -(dead_end_penalty * 1/(ghost_dist+1)) - stop_penalty # Attack precautions
+        d_evaluation = -min_team_distance # Home_Food distance - easy way to find home (change to invader maybe?)
+        e_evaluation = -100 if (abs(old_pos[0] - my_pos[0]) + abs(old_pos[1] - my_pos[1])) > 2 else 0 # suicide prevention
+        e_evaluation += cycle_penalty
+        if ghost_dist_f < 2 and scared_enemy == 1: 
+            e_evaluation -= 75
+        # if e_evaluation < 0:
+        #     print(f"{scared_enemy} {c_evaluation} {e_evaluation} {old_pos} {my_pos} {action}")
+        evaluation = a_evaluation + c_evaluation * scared_enemy + e_evaluation
+        flee = 0
+        # if e_scared_time > 3:
+        #     safety_bool = 1
+        #if ghost_dist == 1 and action != "Stop" or (abs(old_pos[0] - my_pos[0]) + abs(old_pos[1] - my_pos[1])) > 2:
+        #if ghost_dist <= 3:
+            #print(f"{scared_enemy} {a_evaluation} {c_evaluation} {e_evaluation} {dead_end_penalty} {round(ghost_dist,2)} {round(ghost_dist_f,2)} {action} {evaluation} {my_pos} {old_pos}")
+        if self.flee_timer > 0: # We have already decided to flee - execute
+            # This is decided by the food risk tradeoff - roughly - if we carry a lot we flee.
+            flee =  - 1
+            if self.on_home_ground(game_state):
+                flee = -self.flee_timer
+            #safety_bool = 1
+            evaluation = b_evaluation + c_evaluation * scared_enemy + e_evaluation
+        if self.chase_timer > 3 and scared_time < 1 and e_scared_time < 2: 
+            evaluation = d_evaluation + c_evaluation * scared_enemy + e_evaluation * game_state.get_agent_state(self.index).num_carrying
+            if self.on_home_ground(game_state):
+                chase_bool = -self.chase_timer
+                side_reset = True
+
+        # Add fix for ghost on heels - pill search or reset to defense for about 10+ turns (how to ensure this? - use min)
+        return evaluation, safety_bool, chase_bool, flee, side_reset  # call defensive
+    
+    def defensive(self, game_state, action):
+        # integrate switch for scared logic
+        # consider attacker - when close do not decrease self.offense
+        # dont add stop prevention!
+        # add eat reward
+        # reward if the enemy is chased into depth
+        # make border stop nasty - stop direct standoff
+        successor = self.get_successor(game_state, action)
+        enemies = [successor.get_agent_state(i) for i in self.get_opponents(successor)]
+        invaders = [a for a in enemies if a.is_pacman and a.get_position() is not None]
+        enemies_old = [game_state.get_agent_state(i) for i in self.get_opponents(game_state)]
+        invaders_old = [e for e in enemies_old if e.is_pacman and e.get_position() is not None]
+        my_pos = successor.get_agent_state(self.index).get_position()
+        eat_reward = 0
+        if len(invaders_old) > 0 and len(invaders) == 0:
+            # your agent must have eaten the invader
+            eat_reward = 200
+        if not invaders: # list empty
+            team_foods = self.get_food_you_are_defending(game_state).as_list()
+            min_team_distance = [self.get_maze_distance(my_pos, food) for food in team_foods]
+            min_team_distance = sum(min_team_distance) / max(len(min_team_distance),1)
+            if self.on_home_ground(successor):
+                invad_pos = self.closest_ghost_position(game_state, False)
+                #print(invad_pos)
+                #print(f"print 3 {my_pos} {invad_pos}")
+                evaluation_a = -self.get_maze_distance(my_pos, invad_pos) - min_team_distance * 0.8
+                evaluation_c = -self.border_bias(successor)
+            # elif self.switch > 0:
+            #     #??? 
+            else:
+                evaluation_a = -100 # change to potential attack?
+                evaluation_c = 0
+            evaluation = evaluation_a + eat_reward + evaluation_c
+        else:
+            #print("b_eval")
+            invad_pos = self.closest_ghost_position(game_state, True)
+            evaluation_b = -self.get_maze_distance(my_pos, invad_pos)
+            evaluation = evaluation_b + eat_reward # chase & cutoff
+        return evaluation, 0 # evaluation, various values
+    
+
+    def get_defensive_features(self, game_state, action):
+        features = util.Counter()
+        successor = self.get_successor(game_state, action)
+
+        my_state = successor.get_agent_state(self.index)
+        my_pos = my_state.get_position()
+
+        # Computes whether we're on defense (1) or offense (0)
+        features['on_defense'] = 1
+        if my_state.is_pacman: 
+            features['on_defense'] = 0
+
+        # Computes distance to invaders we can see
+        enemies = [successor.get_agent_state(i) for i in self.get_opponents(successor)]
+        invaders = [a for a in enemies if a.is_pacman and a.get_position() is not None]
+        features['num_invaders'] = len(invaders)
+        
+        if len(invaders) > 0:
+            # Prioritize invaders based on depth in our territory
+            border_x = self.home_border_x(game_state)
+            invader_priorities = []
+            
+            for invader in invaders:
+                inv_pos = invader.get_position()
+                
+                # Calculate how deep the invader is in our territory
+                if self.red:
+                    depth_in_territory = border_x - inv_pos[0]  # Higher = deeper
+                else:
+                    depth_in_territory = inv_pos[0] - border_x -1 # Higher = deeper
+                
+                # Only consider invaders actually in our territory (depth > 0)
+                if depth_in_territory <= 0:
+                    continue  # Skip invaders not in our territory
+                
+                dist_to_me = self.get_maze_distance(my_pos, inv_pos)
+                
+                # Prioritize: deeper invaders get higher priority (lower score)
+                # Also consider invaders carrying food
+                food_carrying = invader.num_carrying
+                
+                # Priority score: lower is more urgent
+                # Depth is most important, then food carrying, then distance
+                # Balanced weights: depth matters most, but distance is meaningful
+                priority = -depth_in_territory * 100 - food_carrying * 30 + dist_to_me * 2
+                
+                invader_priorities.append((priority, invader, dist_to_me))
+            if invader_priorities:
+                # Sort by priority (most urgent first)
+                invader_priorities.sort(key=lambda x: x[0])
+                
+                # Use the most urgent invader
+                most_urgent_invader = invader_priorities[0][1]
+                features['invader_distance'] = invader_priorities[0][2]
+            
+                # Block escape route - get between invader and their border
+                invader_pos = most_urgent_invader.get_position()
+                border_x = game_state.data.layout.width // 2
+                walls = game_state.get_walls()
+                
+                # Calculate blocking position (on the border between invader and their home)
+                if self.red:
+                    # Red defends left side, want to be between invader and right border
+                    blocking_x = border_x - 4
+                else:
+                    # Blue defends right side, want to be between invader and left border
+                    blocking_x = border_x + 5
+                
+                # Find valid blocking position at same Y as invader
+                blocking_pos = (int(blocking_x), int(invader_pos[1]))
+                
+                # If blocking position is a wall, find nearest valid position
+                if walls[blocking_pos[0]][blocking_pos[1]]:
+                    # Search for valid positions near the blocking line
+                    min_dist = float('inf')
+                    best_pos = invader_pos
+                    for y in range(max(0, blocking_pos[1] - 3), min(walls.height, blocking_pos[1] + 4)):
+                        test_pos = (blocking_x, y)
+                        if not walls[test_pos[0]][test_pos[1]]:
+                            dist = abs(y - blocking_pos[1])
+                            if dist < min_dist:
+                                min_dist = dist
+                                best_pos = test_pos
+                    blocking_pos = best_pos
+                
+                features['blocking_distance'] = self.get_maze_distance(my_pos, blocking_pos)
+        
+        else:
+            # No invaders visible - patrol strategically
+            patrol_point = self.get_patrol_point(game_state)
+            features['patrol_distance'] = self.get_maze_distance(my_pos, patrol_point)
+        
+        # Defend capsules
+        capsules_defending = self.get_capsules_you_are_defending(successor)
+        if len(capsules_defending) > 0:
+            cap_dists = [self.get_maze_distance(my_pos, cap) for cap in capsules_defending]
+            min_cap_dist = min(cap_dists)
+            
+            # If invaders are near capsules, prioritize defending them
+            if len(invaders) > 0:
+                invader_to_cap_dists = [self.get_maze_distance(inv.get_position(), cap) 
+                                       for inv in invaders for cap in capsules_defending]
+                if len(invader_to_cap_dists) > 0 and min(invader_to_cap_dists) < 5:
+                    features['defend_capsule'] = min_cap_dist
+        
+        # Behavior when scared (enemy ate our capsule)
+        if my_state.scared_timer > 0:
+            features['scared'] = 1
+            # Flee from invaders when scared
+            if len(invaders) > 0:
+                invader_dists = [self.get_maze_distance(my_pos, inv.get_position()) for inv in invaders]
+                # Negative distance means we want to maximize it
+                features['flee_when_scared'] = -min(invader_dists)
+
+        # Anti-stuck mechanisms
+        if action == Directions.STOP: 
+            features['stop'] = 1
+        
+        rev = Directions.REVERSE[game_state.get_agent_state(self.index).configuration.direction]
+        if action == rev: 
+            features['reverse'] = 1
+        
+        # Penalize leaving our territory (becoming Pacman when we should defend)
+        if my_state.is_pacman:
+            features['left_territory'] = 1
+        
+        # Detect looping behavior - penalize repeated positions
+        prev_pos = game_state.get_agent_state(self.index).get_position()
+        if hasattr(self, 'position_history'):
+            self.position_history.append(prev_pos)
+            # Keep only last 8 positions
+            if len(self.position_history) > 10:
+                self.position_history.pop(0)
+            
+            # Check for loops - if current position appears multiple times recently
+            if len(self.position_history) >= 4:
+                position_counts = {}
+                for pos in self.position_history[-4:]:
+                    position_counts[pos] = position_counts.get(pos, 0) + 1
+                
+                # If we've been at my_pos multiple times in recent history
+                if my_pos in position_counts and position_counts[my_pos] >= 2:
+                    features['looping'] = position_counts[my_pos]
+        else:
+            self.position_history = [prev_pos]
+
+        return features
+
+    def get_defensive_weights(self, game_state, action):
+        """Dynamic weights based on whether agent is scared or not"""
+        my_state = game_state.get_agent_state(self.index)
+        
+        if my_state.scared_timer > 0:
+            # Defensive weights when scared - avoid invaders
+            return {
+                'on_defense': 200,
+                'flee_when_scared': 100,
+                'num_invaders': -500,
+                'scared': -1000,
+                'stop': -100,
+                'reverse': -2,
+                'left_territory': 300  # Penalty for leaving territory even when scared
+            }
+        else:
+            # Aggressive weights when not scared
+            return {
+                'num_invaders': -1000,      # Eliminate invaders (top priority)
+                'invader_distance': -700,    # Chase them down
+                'on_defense': 100,          # Stay on defensive side
+                'blocking_distance': -500,    # Get to blocking position
+                'defend_capsule': -600,      # Guard capsules when threatened
+                'patrol_distance': -1,      # Patrol when no threats
+                'stop': -20,               # Never stop
+                'reverse': -2,             # Avoid reversing
+                'looping': -50,             # Avoid looping behavior
+                'left_territory': -500      # Strong penalty for leaving territory
+            }
+
+    def get_patrol_point(self, game_state):
+        """Calculate optimal patrol position - near border where food is densest"""
+        if self.patrol_point is None:
+            food_defending = self.get_food_you_are_defending(game_state).as_list()
+            if len(food_defending) > 0:
+                walls = game_state.get_walls()
+                border_x = self.home_border_x(game_state)
+                
+                # Find the Y coordinate where most food is located
+                # Create a histogram of food positions by Y coordinate
+                y_food_count = {}
+                for food_x, food_y in food_defending:
+                    y_food_count[food_y] = y_food_count.get(food_y, 0) + 1
+                
+                # Find Y coordinate with most food
+                best_y = max(y_food_count.keys(), key=lambda y: y_food_count[y])
+                
+                # Set patrol point at border, aligned with food cluster
+                patrol_candidate = (border_x, best_y)
+                
+                # Ensure it's not a wall
+                if not walls[patrol_candidate[0]][patrol_candidate[1]]:
+                    self.patrol_point = patrol_candidate
+                else:
+                    # Search nearby Y positions if exact position is a wall
+                    for offset in range(1, 5):
+                        for dy in [offset, -offset]:
+                            test_y = best_y + dy
+                            if 0 <= test_y < walls.height:
+                                test_pos = (border_x, test_y)
+                                if not walls[test_pos[0]][test_pos[1]]:
+                                    self.patrol_point = test_pos
+                                    break
+                        if self.patrol_point is not None:
+                            break
+                    
+                    # If still not found, fallback to nearest food to border
+                    if self.patrol_point is None:
+                        self.patrol_point = min(food_defending, 
+                                               key=lambda f: abs(f[0] - border_x))
+            else:
+                # No food left, patrol at border center
+                border_x = self.home_border_x(game_state)
+                height = game_state.get_walls().height
+                self.patrol_point = (border_x, height // 2)
+        
+        return self.patrol_point
+
+
+    def choose_action(self, game_state):
+        #print(game_state) % walls, . = food, G Ghost, o pill, 
+        #integrate defense logic
+        actions = game_state.get_legal_actions(self.index)
+        #print(actions) ['North', 'South', 'Stop']
+        if self.offense and not self.switch > 0:
+            # eval, safety, chase, flee
+            results = {a: self.offensive(game_state, a) for a in actions}
+            values = {a: results[a][0] for a in actions}
+
+        else:
+            features_dict = {a: self.get_defensive_features(game_state, a) for a in actions}
+            weights_dict = {a: self.get_defensive_weights(game_state, a) for a in actions}
+            # Recalculate values using feature-weight evaluation
+            values = {a: features_dict[a] * weights_dict[a] for a in actions}
+            results = {a: (values[a], 0) for a in actions}
+            if self.switch == 1:
+                print("Back to attacking")
+
+        # You can profile your evaluation time by uncommenting these lines
+        # start = time.time()
+        # print 'eval time for agent %d: %.4f' % (self.index, time.time() - start)
+        max_value = max(values.values())
+        best_actions = [a for a in actions if values[a] == max_value]
+        chosen_action = random.choice(best_actions)
+        if self.offense and not self.switch > 0:
+            chosen_safety_bool = results[chosen_action][1] # Is continuing offense risky? negative if yes
+            chase_bool = results[chosen_action][2] # chase_bool
+            self.flee_timer += results[chosen_action][3] # How long should we flee
+            side_reset = results[chosen_action][4] # Should we stay on our side for some time?
+            if side_reset:
+                self.switch += 20
+                print("decided to defend")
+            self.chase_timer += chase_bool
+            if self.chase_timer == 3 and chase_bool == 1:
+                print("chased -> flee")
+                if self.chase_timer == 3 and chase_bool == 1 and game_state.get_agent_state(self.index).scared_timer > 0:
+                    print("not fleeing yet - scared")
+            if chosen_safety_bool < 0 and self.flee_timer < 2:
+                self.flee_timer = 10
+                print("decided to flee because food")
+        else:
+            if self.offense:
+                self.switch -= 1
+        food_left = len(self.get_food(game_state).as_list())
+        # if self.chase_timer > 0:
+        #     print(best_actions)
+        if food_left <= 2:
+            best_dist = 9999 # improve logic or switch to defense
+            best_action = None
+            for action in actions:
+                successor = self.get_successor(game_state, action)
+                pos2 = successor.get_agent_position(self.index)
+                dist = self.get_maze_distance(self.start, pos2)
+                if dist < best_dist:
+                    best_action = action
+                    best_dist = dist
+            return best_action
+        cur_pos = game_state.get_agent_state(self.index).get_position()
+        food_carry = game_state.get_agent_state(self.index).num_carrying
+        if food_carry != self.carrying:
+            self.carrying = food_carry
+            self.recent_positions = []
+        if len(self.recent_positions) > 6:
+            self.recent_positions.pop(0)
+
+        self.recent_positions.append(cur_pos)
+        return random.choice(best_actions)
+    
+    def get_successor(self, game_state, action):
+        """
+        Finds the next successor which is a grid position (location tuple).
+        """
+        successor = game_state.generate_successor(self.index, action)
+        pos = successor.get_agent_state(self.index).get_position()
+        if pos != nearest_point(pos):
+            # Only half a grid position was covered
+            return successor.generate_successor(self.index, action)
+        else:
+            return successor
+
+    def evaluate(self, game_state, action):
+        """
+        Computes a linear combination of features and feature weights
+        """
+        features = self.get_features(game_state, action)
+        weights = self.get_weights(game_state, action)
+        return features * weights
+    def get_features(self, game_state, action):
+        """
+        Returns a counter of features for the state
+        """
+        features = util.Counter()
+        successor = self.get_successor(game_state, action)
+        features['successor_score'] = self.get_score(successor)
+        return features
+    def get_weights(self, game_state, action):
+        """
+        Normally, weights do not depend on the game state.  They can be either
+        a counter or a dictionary.
+        """
+        return {'successor_score': 1.0}
 
 class OffensiveReflexAgent(ReflexCaptureAgent):
     """
