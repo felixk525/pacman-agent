@@ -445,8 +445,8 @@ class OmniReflexCaptureAgent(CaptureAgent):
         # if e_scared_time > 3:
         #     safety_bool = 1
         #if ghost_dist == 1 and action != "Stop" or (abs(old_pos[0] - my_pos[0]) + abs(old_pos[1] - my_pos[1])) > 2:
-        if ghost_dist <= 3:
-            print(f"{scared_enemy} {a_evaluation} {c_evaluation} {e_evaluation} {dead_end_penalty} {round(ghost_dist,2)} {round(ghost_dist_f,2)} {action} {evaluation} {my_pos} {old_pos}")
+        #if ghost_dist <= 3:
+            #print(f"{scared_enemy} {a_evaluation} {c_evaluation} {e_evaluation} {dead_end_penalty} {round(ghost_dist,2)} {round(ghost_dist_f,2)} {action} {evaluation} {my_pos} {old_pos}")
         if self.flee_timer > 0: # We have already decided to flee - execute
             # This is decided by the food risk tradeoff - roughly - if we carry a lot we flee.
             flee =  - 1
