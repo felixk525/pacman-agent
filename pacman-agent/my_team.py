@@ -139,6 +139,7 @@ class OmniReflexCaptureAgent(CaptureAgent):
         self.switch = 0 # How long should we switch attacker defender role
         self.recent_positions = []
         self.carrying = 0
+        self.two_ghost = 0
 
     def register_initial_state(self, game_state):
         super().register_initial_state(game_state)
@@ -165,62 +166,82 @@ class OmniReflexCaptureAgent(CaptureAgent):
                     visited.add(nxt)
                     queue.append((nxt, depth+1))
         if max_reached_depth < max_depth:
-            depth_penalty = (max_reached_depth)*9
+            depth_penalty = (len(visited) - 1) * 9#(max_reached_depth)*9
             return depth_penalty
         return 0
 
-    def ghost_distance(self, game_state):
-        #also return index to use for the scared check
+# 100 / distance **2 -> distance = 4 -> 
+
+    def ghost_distance(self, game_state, multiple=False):
         enemies = self.get_opponents(game_state)
         my_pos = game_state.get_agent_state(self.index).get_position()
         noisy = game_state.get_agent_distances()
         walls = game_state.get_walls()
         width = walls.width
         height = walls.height
+        border_x = width // 2
+        
+        # for multiple=True collect all (dist, idx)
+        results = []
         best_estimate = 9999
-        g_index = 0
+        best_index = 0
         for index in enemies:
             s = game_state.get_agent_state(index)
             real_pos = game_state.get_agent_position(index)
-            border_x = width // 2
-            threat_factor = 0.1
-            if not s.is_pacman:
-                threat_factor = 1.0
-            if real_pos is not None:
-                if s.is_pacman:
+
+            # compute threat factor
+            if s.is_pacman:
+                # threat increases the closer they are to their border
+                if real_pos is not None:
                     dx = abs(real_pos[0] - border_x)
                     threat_factor = 0.7 - 0.6 * (min(dx, 5) / 5.0)
+                else:
+                    threat_factor = 0.1
+            else:
+                threat_factor = 1.0  # enemy ghost
+
+            if real_pos is not None:
                 dist = self.get_maze_distance(my_pos, real_pos)
-                if dist < best_estimate:
-                    best_estimate = dist
-                    g_index = index
+                scaled = dist / threat_factor
+
             else:
                 orig_n_dist = noisy[index]
-                noisy_dist = orig_n_dist
-                if noisy_dist is None:
+                if orig_n_dist is None:
                     continue
-                if noisy_dist <= 14:
-                    if noisy_dist <= 5:
-                        noisy_dist = 7
-                    candidates = []
-                    for x in range(width):
-                        for y in range(height):
-                            if walls[x][y]: 
-                                continue
-                            manh = abs(x - my_pos[0]) + abs(y - my_pos[1])
-                            probablity = game_state.get_distance_prob(manh, orig_n_dist)
-                            if manh <= noisy_dist and manh >= noisy_dist -1:
-                                real = self.get_maze_distance(my_pos, (x, y))
-                                if real > 5:
-                                    candidates.append(real * probablity)
-                    if not candidates:
-                        continue
-                    # conservative estimate
-                    estimate = (sum(candidates)) * 0.8
-                    if estimate < best_estimate:
-                        best_estimate = estimate
-                        g_index = index
-        return best_estimate * 1 / threat_factor, g_index
+                noisy_dist = orig_n_dist
+                if noisy_dist <= 5:
+                    noisy_dist = 7
+                # collect weighted distances
+                candidates = []
+                for x in range(width):
+                    for y in range(height):
+                        if walls[x][y]:
+                            continue
+                        manh = abs(x - my_pos[0]) + abs(y - my_pos[1])
+                        if noisy_dist - 1 <= manh <= noisy_dist and manh > 5:
+                            prob = game_state.get_distance_prob(manh, orig_n_dist)
+                            real_d = self.get_maze_distance(my_pos, (x, y))
+                            if real_d > 5:
+                                candidates.append(real_d * prob)
+
+                if not candidates:
+                    continue
+
+                estimate = sum(candidates) * 0.9
+                scaled = estimate / threat_factor
+
+            # multiple mode
+            results.append((scaled, index))
+            # single mode
+            if scaled < best_estimate:
+                best_estimate = scaled
+                best_index = index
+
+        if multiple:
+            # sort by distance (closest first)
+            results.sort(key=lambda t: t[0])
+            return results, best_index
+        return best_estimate, best_index
 
     def home_border_x(self, game_state):
         width = game_state.get_walls().width
@@ -393,75 +414,215 @@ class OmniReflexCaptureAgent(CaptureAgent):
 
         return best_pos
 
+    def ghost_positions(self,game_state):
+        enemies = self.get_opponents(game_state)
+        my_pos = game_state.get_agent_state(self.index).get_position()
+        my_pos = (int(my_pos[0]), int(my_pos[1]))
+        noisy = game_state.get_agent_distances()
+        walls = game_state.get_walls()
+        width, height = walls.width, walls.height
+
+        positions = []
+
+        for index in enemies:
+
+            real_pos = game_state.get_agent_position(index)
+            if real_pos is not None:
+                positions.append(real_pos)
+                continue
+
+            orig_n_dist = noisy[index]
+            if orig_n_dist is None:
+                continue
+
+            noisy_dist = orig_n_dist
+            if noisy_dist <= 5:
+                noisy_dist = 7
+
+            candidates = []
+            for x in range(width):
+                for y in range(height):
+                    if walls[x][y]:
+                        continue
+
+                    manh = abs(x - my_pos[0]) + abs(y - my_pos[1])
+                    prob = game_state.get_distance_prob(manh, orig_n_dist)
+                    if noisy_dist - 1 <= manh <= noisy_dist:
+                        real_d = self.get_maze_distance(my_pos, (x, y))
+                        if real_d > 5:
+                            candidates.append(((x, y), real_d, prob))
+
+            if not candidates:
+                continue
+            # choose (distance/prob) minimal
+            best_candidate = min(candidates, key=lambda c: c[1] / max(c[2], 1e-6))
+            pos, _, _ = best_candidate
+            positions.append(pos)
+
+        return positions
+
+
+
     def offensive(self, game_state, action):
         # Problem with pincer scenarios and no deadend scenarios
-        # Add prevention for softlock - repeating game_states - improve to accumulate
         # Add pincerdetection / better ghost avoidance
+        # add y reset entry after defense recovery switch (urgent)
+        # add pill search consideration in chase scenario (urgent)
+        # add consideration for cross dead ends - simply use accessible fields (urgent - check)
+        # with capsule deeper deadlocks are better - one time opportunity
         old_pos = game_state.get_agent_state(self.index).get_position()
         successor = self.get_successor(game_state, action)
         my_pos = successor.get_agent_state(self.index).get_position()
-        x, y = old_pos
+        enemies = [successor.get_agent_state(i) for i in self.get_opponents(successor)]
+        invaders = [a for a in enemies if a.is_pacman and a.get_position() is not None]
+        side_reset = False # False - nothing / True -> 20 defensive move afterwards
         scared_time = game_state.get_agent_state(self.index).scared_timer
-        side_reset = False
         foods = self.get_food(game_state).as_list()
         stop_penalty = 0
-        if action == "Stop":
-            stop_penalty = 50
+        
+        # If on own side and invader is close - temporarily switch to defense via side reset
+        if self.on_home_ground(game_state) and invaders and scared_time < 2:
+            invad_pos = self.closest_ghost_position(game_state, True)
+            if self.get_maze_distance(my_pos, invad_pos) <= 3:
+                side_reset = True
+        
+        x, y = old_pos
+        if action == "Stop": # Stop penalty
+            stop_penalty = 100
+        # Closest food distance
         min_distance = min([self.get_maze_distance(my_pos, food) for food in foods])
+        old_min_distance = min([self.get_maze_distance(old_pos, food) for food in foods])
         team_foods = self.get_food_you_are_defending(game_state).as_list()
+        # Closest food distance for food of own team
         min_team_distance = min([self.get_maze_distance(my_pos, food) for food in team_foods])
-        dead_end_penalty = self.local_mobility(successor, old_pos, my_pos, max_depth=7) # max depth detected x 9 -> 54 limit in this case
-        ghost_dist, e_index = self.ghost_distance(game_state)
-        ghost_dist_f, _ = self.ghost_distance(successor)
+        # Detect dead ends up to 6 deep
+        dead_end_penalty = self.local_mobility(successor, old_pos, my_pos, max_depth=7) # max depth detected - 1 x 9 -> 54 limit in this case
+        # Current closest ghost distance and the ghosts index & future state ghost distance
+        ghost_dist, e_index = self.ghost_distance(game_state, False)
+        ghost_dist_f, _ = self.ghost_distance(successor, False)
+        multi_dist, _ = self.ghost_distance(successor, True)
+        distances = [d for d, idx in multi_dist]
+
+        # Check whether the enemy is scared
         e_scared_time = game_state.get_agent_state(e_index).scared_timer
         if e_scared_time > 3:
             scared_enemy = 0
-
             #print("ignore enemies")
         else:
             scared_enemy = 1
+        
+        # Chase protocol - if chased return home -> Cummulative chase bool of multiple turns > 3
         if ghost_dist > 0 and ghost_dist <= 2:
             chase_bool = 1/ghost_dist
         elif self.chase_timer > 0:
             chase_bool = -0.5
         else:
             chase_bool = 0
+        
+        # Softlock penalty to avoid standoff situations
         cycle_penalty = 0
-        #if my_pos in self.recent_positions[-3:]:
-            #cycle_penalty = -0.3
+        k = self.recent_positions.count(my_pos)
+        if k > 1:
+            cycle_penalty = -(2 ** (k * 2))
 
+        # A = Incentive to go for food | B = Incentive to bring food home | 
+        # C = Incentive against dead ends and stopping | D = Path home via food of own team | 
+        # E = Penalty for getting eaten & softlock penalty
         a_evaluation = -min_distance 
-        b_evaluation, safety_bool = self.food_risk(my_pos, game_state) # Tradeoff to bring food home
-        c_evaluation = -(dead_end_penalty * 1/(ghost_dist+1)) - stop_penalty # Attack precautions
-        d_evaluation = -min_team_distance # Home_Food distance - easy way to find home (change to invader maybe?)
-        e_evaluation = -100 if (abs(old_pos[0] - my_pos[0]) + abs(old_pos[1] - my_pos[1])) > 2 else 0 # suicide prevention
-        e_evaluation += cycle_penalty
+        b_evaluation, safety_bool = self.food_risk(my_pos, game_state)
+        c_evaluation = -stop_penalty
+        if dead_end_penalty > 0:
+            #if old_min_distance > min_distance:
+                if ghost_dist != 0: # change -> catch 0 case
+                    #min_distance += 1
+                    # changed to dead end penalty from ghost dist
+                    c_evaluation -= ((2*(dead_end_penalty/9) + 1)/ (ghost_dist + 0.5)) * 2 # scales between 0 and smaller values than -2
+
+        invaders = [a for a in enemies if a.is_pacman and a.get_position() is not None]
+        if not invaders:
+            two_ghoster = True
+        else:
+            two_ghoster = False
+
+        special_movement = False
+        if self.flee_timer > 0 or (self.chase_timer > 3 and e_scared_time < 2):
+            if (self.chase_timer > 3 and e_scared_time < 2):
+                #print("considering special move 1")
+                capsules = self.get_capsules(game_state)
+                if capsules:
+                    #print("considering special move")
+                    if not invaders:
+                        #print("no invaders - proceed")
+                        ghost_positions = self.ghost_positions(game_state)
+
+                        # gather border cells
+                        border_x = self.home_border_x(game_state)
+                        walls = game_state.get_walls()
+                        height = walls.height
+                        border_cells = [(border_x, y) for y in range(height) if not walls[border_x][y]]
+
+                        # target candidates
+                        targets = border_cells + capsules
+                        best_target = None
+                        best_margin = -9999
+
+                        # Evaluate each target
+                        for t in targets:
+                            my_d = self.get_maze_distance(my_pos, t)
+
+                            # compute smallest ghost distance to this target
+                            ghost_d = min(self.get_maze_distance(gpos, t) for gpos in ghost_positions)
+                            margin = ghost_d - my_d
+                            if margin > best_margin:
+                                best_margin = margin
+                                best_target = t
+
+                        # commit to the escape target
+                        if best_target is not None:
+                            #print(best_target)
+                            special_movement = True
+                            c_evaluation -= self.get_maze_distance(my_pos, best_target)
+        # if not in special escape mode → normal pincer avoidance
+        if not special_movement:
+            c_evaluation -= sum(10 / ((d + 1) ** 2) for d in distances) * ((dead_end_penalty + 1) ** 0.5)
+
+        d_evaluation = -min_team_distance
+        e_evaluation = -150 if (abs(old_pos[0] - my_pos[0]) + abs(old_pos[1] - my_pos[1])) > 2 else 0
+        if ghost_dist > 2:  
+            e_evaluation += cycle_penalty
         if ghost_dist_f < 2 and scared_enemy == 1: 
             e_evaluation -= 75
-        # if e_evaluation < 0:
-        #     print(f"{scared_enemy} {c_evaluation} {e_evaluation} {old_pos} {my_pos} {action}")
         evaluation = a_evaluation + c_evaluation * scared_enemy + e_evaluation
         flee = 0
+
+        # Debugging
+        # if e_evaluation < 0:
+        #     print(f"{scared_enemy} {c_evaluation} {e_evaluation} {old_pos} {my_pos} {action}")
         # if e_scared_time > 3:
         #     safety_bool = 1
         #if ghost_dist == 1 and action != "Stop" or (abs(old_pos[0] - my_pos[0]) + abs(old_pos[1] - my_pos[1])) > 2:
         #if ghost_dist <= 3:
-            #print(f"{scared_enemy} {a_evaluation} {c_evaluation} {e_evaluation} {dead_end_penalty} {round(ghost_dist,2)} {round(ghost_dist_f,2)} {action} {evaluation} {my_pos} {old_pos}")
+        #if special_movement:
+        #print(f"{str(scared_enemy):>6} "f"{a_evaluation:>7.2f} "f"{c_evaluation:>7.2f} "f"{e_evaluation:>7.2f} "f"{dead_end_penalty:>6.2f} "f"{ghost_dist:>6.2f} "f"{ghost_dist_f:>6.2f} "f"{str(action):>10} "f"{evaluation:>7.2f} "f"{str(my_pos):>12} "f"{str(old_pos):>12} "f"{cycle_penalty:>6.2f} "f"{str(special_movement):>6}")
+
         if self.flee_timer > 0: # We have already decided to flee - execute
             # This is decided by the food risk tradeoff - roughly - if we carry a lot we flee.
             flee =  - 1
             if self.on_home_ground(game_state):
-                flee = -self.flee_timer
+                flee = -self.flee_timer # reset flee behaviour
             #safety_bool = 1
             evaluation = b_evaluation + c_evaluation * scared_enemy + e_evaluation
-        if self.chase_timer > 3 and scared_time < 1 and e_scared_time < 2: 
-            evaluation = d_evaluation + c_evaluation * scared_enemy + e_evaluation * game_state.get_agent_state(self.index).num_carrying
+
+        # Value settings for the chase scenario
+        carrying = game_state.get_agent_state(self.index).num_carrying
+        if (self.chase_timer > 3 and scared_time < 1 and e_scared_time < 2) or (self.chase_timer > 3 and e_scared_time < 2 and carrying > 2): 
+            evaluation = d_evaluation + c_evaluation * scared_enemy + e_evaluation * carrying
             if self.on_home_ground(game_state):
                 chase_bool = -self.chase_timer
                 side_reset = True
 
         # Add fix for ghost on heels - pill search or reset to defense for about 10+ turns (how to ensure this? - use min)
-        return evaluation, safety_bool, chase_bool, flee, side_reset  # call defensive
+        return evaluation, safety_bool, chase_bool, flee, side_reset, two_ghoster  # call defensive
     
     def defensive(self, game_state, action):
         # integrate switch for scared logic
@@ -517,6 +678,7 @@ class OmniReflexCaptureAgent(CaptureAgent):
             results = {a: self.defensive(game_state, a) for a in actions}
             values = {a: results[a][0] for a in actions}
             if self.switch == 1:
+                self.recent_positions = []
                 print("Back to attacking")
 
         # You can profile your evaluation time by uncommenting these lines
@@ -530,13 +692,19 @@ class OmniReflexCaptureAgent(CaptureAgent):
             chase_bool = results[chosen_action][2] # chase_bool
             self.flee_timer += results[chosen_action][3] # How long should we flee
             side_reset = results[chosen_action][4] # Should we stay on our side for some time?
+            two_ghoster = results[chosen_action][5]
+            if two_ghoster:
+                self.two_ghost = 5
+            else:
+                if self.two_ghost > 0:
+                    self.two_ghost -= 1 
             if side_reset:
                 self.switch += 20
                 print("decided to defend")
             self.chase_timer += chase_bool
             if self.chase_timer == 3 and chase_bool == 1:
                 print("chased -> flee")
-                if self.chase_timer == 3 and chase_bool == 1 and game_state.get_agent_state(self.index).scared_timer > 0:
+                if game_state.get_agent_state(self.index).scared_timer > 0 and game_state.get_agent_state(self.index).num_carrying < 3:
                     print("not fleeing yet - scared")
             if chosen_safety_bool < 0 and self.flee_timer < 2:
                 self.flee_timer = 10
