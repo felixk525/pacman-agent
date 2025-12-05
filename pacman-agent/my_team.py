@@ -123,12 +123,7 @@ class ReflexCaptureAgent(CaptureAgent):
 
 class OmniReflexCaptureAgent(CaptureAgent):
     #TODO:
-    # Add pillseeker and according attackphase for both
-    # Defensive and attacker crossover for according points
-    # Defensive
-    # No pillseeker behavious on either side yet.
-
-    # Add safety for no food (both sides) and for no enemy on each field
+    # Potential improvements in offense function comments 
 
     def __init__(self, index, attacker, time_for_computing=.1):
         super().__init__(index, time_for_computing)
@@ -139,7 +134,7 @@ class OmniReflexCaptureAgent(CaptureAgent):
         self.switch = 0 # How long should we switch attacker defender role
         self.recent_positions = []
         self.carrying = 0
-        self.two_ghost = 0
+        self.two_ghost = 0 # How long should the offense be able to consider special moves
         self.patrol_point = None
 
     def register_initial_state(self, game_state):
@@ -148,6 +143,8 @@ class OmniReflexCaptureAgent(CaptureAgent):
         self.start = game_state.get_agent_position(self.index)
 
     def local_mobility(self, game_state, old_pos, start_pos, max_depth=5):
+        # Deadend detector. Does a sort of BFS into a path and if its a deadend it returns 
+        # the amount of fields on that path. (x9)
         walls = game_state.get_walls()
         max_reached_depth = 0
         visited = {start_pos, old_pos}
@@ -167,11 +164,13 @@ class OmniReflexCaptureAgent(CaptureAgent):
                     visited.add(nxt)
                     queue.append((nxt, depth+1))
         if max_reached_depth < max_depth:
-            depth_penalty = (len(visited) - 1) * 9#(max_reached_depth)*9
+            depth_penalty = (len(visited) - 1) * 9
             return depth_penalty
         return 0
 
     def ghost_distance(self, game_state, multiple=False):
+        # Distance to closest ghost. Semi redundant due to ghost_positions
+        # Includes threat weighting for the border
         enemies = self.get_opponents(game_state)
         my_pos = game_state.get_agent_state(self.index).get_position()
         noisy = game_state.get_agent_distances()
@@ -225,7 +224,6 @@ class OmniReflexCaptureAgent(CaptureAgent):
 
                 if not candidates:
                     continue
-
                 estimate = sum(candidates) * 0.9
                 scaled = estimate / threat_factor
 
@@ -245,6 +243,7 @@ class OmniReflexCaptureAgent(CaptureAgent):
         return best_estimate, best_index
 
     def home_border_x(self, game_state):
+        # Brief helper function to get the border x coordinate
         width = game_state.get_walls().width
         if self.red:
             return width // 2 - 1
@@ -252,10 +251,10 @@ class OmniReflexCaptureAgent(CaptureAgent):
             return width // 2
 
     def food_risk(self, pos, game_state):
+        # This function checks the ratio of enemy and team food. If the agent is carrying a 
+        # lot of food or the situaiton looks bad he returns home.
         foods = self.get_food(game_state).as_list()
         team_foods = self.get_food_you_are_defending(game_state).as_list()
-        # x,y = pos
-        # mid_x = game_state.data.layout.width // 2
         if not foods:
             return 999 # we want to go home
         food_enemies = len(foods)
@@ -267,17 +266,14 @@ class OmniReflexCaptureAgent(CaptureAgent):
         imbalance = factor_1 * 18/food_team 
         flee_val = 1
         if imbalance > 10:
-            # if self.red:
-            #     factor_2 = x
-            # else:
-            #     factor_2 = game_state.data.layout.width - x
             imbalance = -min([self.get_maze_distance(pos, food) for food in team_foods])
             # Use maze distance and add timer
-            imbalance = imbalance #* factor_2
+            imbalance = imbalance
             flee_val = -1
         return imbalance, flee_val # balanced - imbalanced | ~0 - 2
     
     def on_home_ground(self, game_state):
+        # Brief helper function to detect if the agent is on their side
         x,y  = game_state.get_agent_state(self.index).get_position()
         if x < self.home_border_x(game_state):
             if self.red:
@@ -290,21 +286,14 @@ class OmniReflexCaptureAgent(CaptureAgent):
             else:
                 return True
 
-    def get_enemy_scared_times(self, game_state):
-        times = {}
-        for enemy in self.get_opponents(game_state):
-            st = game_state.get_agent_state(enemy)
-            times[enemy] = getattr(st, "scaredTimer", getattr(st, "scared_timer", 0))
-        return times
-
     def border_bias(self, game_state):
         # should return bias to stay on border -> enable easier trapping
-        # penalty for very close to border
+        # Redundant - unused
         x, y = game_state.get_agent_state(self.index).get_position()
         borderx = self.home_border_x(game_state)
         value = 0
         if self.red:
-            if x >= borderx -2: #14 16
+            if x >= borderx -2:
                 value = abs(x-(borderx-2)) * 4
         else:
             if x <= borderx +2:
@@ -312,20 +301,13 @@ class OmniReflexCaptureAgent(CaptureAgent):
         #consider multiple invaders - take min
         return value
     
-    def invader_distance(self, game_state):
-        return 0
-    
-    def trap_factor(self, game_state, e_index):
-        # should return how trapped the enemy is
-        return 0
-    
     def closest_ghost_position(self, game_state, invasion=False):
+        # for offense - estimates the closes ghost position. Semi redundant due to ghost positions
         enemies = self.get_opponents(game_state)
         my_pos = game_state.get_agent_state(self.index).get_position()
         my_pos = (int(my_pos[0]), int(my_pos[1]))
         noisy = game_state.get_agent_distances()
         walls = game_state.get_walls()
-        #print(walls)
         width = walls.width
         height = walls.height
         best_dist = 9999
@@ -350,20 +332,19 @@ class OmniReflexCaptureAgent(CaptureAgent):
                         break
                 if best_pos:
                     break
-        #print(f"print 1 {best_pos} {my_pos}")
         for index in enemies:
             s = game_state.get_agent_state(index)
             # invasion=True  → only track invaders (enemy Pacman)
             # invasion=False → only track ghosts
             if invasion:
                 if not s.is_pacman:
-                    continue  # skip ghosts
+                    continue
             else:
                 if s.is_pacman:
-                    continue  # skip invaders
+                    continue
 
             real_pos = game_state.get_agent_position(index)
-            # case 1: exact known position
+            # position known
             if real_pos is not None:
                 dist = self.get_maze_distance(my_pos, real_pos)
                 if dist < best_dist:
@@ -371,7 +352,7 @@ class OmniReflexCaptureAgent(CaptureAgent):
                     best_pos = real_pos
                 continue
 
-            # case 2: noisy sensor reading
+            # noisy position estimate
             orig_n_dist = noisy[index]
             if orig_n_dist is None:
                 continue
@@ -395,7 +376,6 @@ class OmniReflexCaptureAgent(CaptureAgent):
                             candidates.append(((x, y), real_d, prob))
             if not candidates:
                 continue
-
             # score = real distance weighted by probability
             best_candidate = min(
                 candidates,
@@ -406,27 +386,19 @@ class OmniReflexCaptureAgent(CaptureAgent):
             if dist < best_dist:
                 best_dist = dist
                 best_pos = pos
-        #print(f"print 2{best_pos} {my_pos}")
-        # x, y = best_pos
-        # x = min(max(int(x), 0), width - 1)
-        # y = min(max(int(y), 0), height - 1)
-        # if not walls[x][y]:
-        #     best_pos = (x, y)
-
         return best_pos
 
     def ghost_positions(self,game_state):
+        # For the special movement consideration this estimates the positions of both enemy agents
         enemies = self.get_opponents(game_state)
         my_pos = game_state.get_agent_state(self.index).get_position()
         my_pos = (int(my_pos[0]), int(my_pos[1]))
         noisy = game_state.get_agent_distances()
         walls = game_state.get_walls()
         width, height = walls.width, walls.height
-
         positions = []
 
         for index in enemies:
-
             real_pos = game_state.get_agent_position(index)
             if real_pos is not None:
                 positions.append(real_pos)
@@ -435,7 +407,6 @@ class OmniReflexCaptureAgent(CaptureAgent):
             orig_n_dist = noisy[index]
             if orig_n_dist is None:
                 continue
-
             noisy_dist = orig_n_dist
             if noisy_dist <= 5:
                 noisy_dist = 7
@@ -445,7 +416,6 @@ class OmniReflexCaptureAgent(CaptureAgent):
                 for y in range(height):
                     if walls[x][y]:
                         continue
-
                     manh = abs(x - my_pos[0]) + abs(y - my_pos[1])
                     prob = game_state.get_distance_prob(manh, orig_n_dist)
                     if noisy_dist - 1 <= manh <= noisy_dist:
@@ -459,13 +429,13 @@ class OmniReflexCaptureAgent(CaptureAgent):
             best_candidate = min(candidates, key=lambda c: c[1] / max(c[2], 1e-6))
             pos, _, _ = best_candidate
             positions.append(pos)
-
         return positions
 
     def offensive(self, game_state, action):
-        # add y reset entry after defense recovery switch (urgent)
-        # add pill search consideration in chase scenario (urgent)
-        # urgent fix d_evaluation - replace with closest field dist?
+        # potential improvements
+        # add y reset entry after defense recovery switch (-)
+        # add better a-evaluation to target food outliers (-)
+        # when eating the pill go deep in enemy territory (-)
         old_pos = game_state.get_agent_state(self.index).get_position()
         successor = self.get_successor(game_state, action)
         my_pos = successor.get_agent_state(self.index).get_position()
@@ -503,7 +473,6 @@ class OmniReflexCaptureAgent(CaptureAgent):
         e_scared_time = game_state.get_agent_state(e_index).scared_timer
         if e_scared_time > 1:
             scared_enemy = 0
-            #print("ignore enemies")
         else:
             scared_enemy = 1
         
@@ -528,11 +497,10 @@ class OmniReflexCaptureAgent(CaptureAgent):
         b_evaluation, safety_bool = self.food_risk(my_pos, game_state)
         c_evaluation = -stop_penalty
         if dead_end_penalty > 0:
-            #if old_min_distance > min_distance:
-                if ghost_dist != 0: # change -> catch 0 case
-                    #min_distance += 1
-                    # changed to dead end penalty from ghost dist
-                    c_evaluation -= ((2*(dead_end_penalty/9) + 1)/ (ghost_dist + 0.5)) * 2 # scales between 0 and smaller values than -2
+            if ghost_dist != 0:
+                # C-evaluation (1) - Delicate balance for deadlocks - if it exceeds -2 -> we dont commit
+                # -> if it stays below -2 -> commit
+                c_evaluation -= ((2*(dead_end_penalty/9) + 1)/ (ghost_dist + 0.5)) * 2
 
         invaders = [a for a in enemies if a.is_pacman and a.get_position() is not None]
         if not invaders:
@@ -540,61 +508,60 @@ class OmniReflexCaptureAgent(CaptureAgent):
         else:
             two_ghoster = False
 
+        # Special movement calculation | This happens if the agent is chased and the enemy not 
+        # scared, and capsules exist and both enemies are in the enemy area. We consider the 
+        # border and capsules and find the place where we have the best odds to escape to. 
+        # Fluctuations are expected.
         special_movement = False
         best_target = None
-        if self.flee_timer > 0 or (self.chase_timer > 3 and e_scared_time < 2):
-            if (self.chase_timer > 3 and e_scared_time < 2):
-                #print("considering special move 1")
-                capsules = self.get_capsules(game_state)
-                if capsules:
-                    #print("considering special move")
-                    if not invaders:
-                        #print("no invaders - proceed")
-                        ghost_positions = self.ghost_positions(game_state)
+        if (self.chase_timer > 3 and e_scared_time < 2):
+            capsules = self.get_capsules(game_state)
+            if capsules:
+                if not invaders:
+                    ghost_positions = self.ghost_positions(game_state)
 
-                        # gather border cells
-                        border_x = self.home_border_x(game_state)
-                        walls = game_state.get_walls()
-                        height = walls.height
-                        border_cells = [(border_x, y) for y in range(height) if not walls[border_x][y]]
+                    # target candidates
+                    border_x = self.home_border_x(game_state)
+                    walls = game_state.get_walls()
+                    height = walls.height
+                    border_cells = [(border_x, y) for y in range(height) if not walls[border_x][y]]
+                    targets = border_cells + capsules
+                    best_margin = -9999
 
-                        # target candidates
-                        targets = border_cells + capsules
-                        best_margin = -9999
+                    # Evaluate each target
+                    for t in targets:
+                        my_d = self.get_maze_distance(my_pos, t)
+                        # compute smallest ghost distance to this target
+                        ghost_d = min(self.get_maze_distance(gpos, t) for gpos in ghost_positions)
+                        margin = ghost_d - my_d
+                        if margin > best_margin:
+                            best_margin = margin
+                            best_target = t
 
-                        # Evaluate each target
-                        for t in targets:
-                            my_d = self.get_maze_distance(my_pos, t)
-
-                            # compute smallest ghost distance to this target
-                            ghost_d = min(self.get_maze_distance(gpos, t) for gpos in ghost_positions)
-                            margin = ghost_d - my_d
-                            if margin > best_margin:
-                                best_margin = margin
-                                best_target = t
-
-                        # commit to the escape target
-                        if best_target is not None:
-                            #print(best_target)
-                            special_movement = True
-                            c_evaluation -= self.get_maze_distance(my_pos, best_target)
-        # if not in special escape mode → normal pincer avoidance
+                    # commit to the escape target
+                    if best_target is not None:
+                        #print(best_target)
+                        special_movement = True
+                        c_evaluation -= self.get_maze_distance(my_pos, best_target)
+        # if not in special escape mode -> normal pincer avoidance
         if not special_movement:
-            c_evaluation -= sum(10 / ((d + 1) ** 2) for d in distances) * ((dead_end_penalty + 1) ** 0.5)
+            c_evaluation -= sum(10 / ((d + 1) ** 2) for d in distances) * 1#((dead_end_penalty + 1) ** 0.5)
 
+        # D-evaluation -> x coordinate incentive
         if self.red:
             d_evaluation = -x#-min_team_distance
         else:
             walls = game_state.get_walls()
             width = walls.width
             d_evaluation = -(width - x)
+        
+        # E-evaluation - jitter movement penalty, death penalty via respawn movement, next turn death area penalty
         e_evaluation = -150 if (abs(old_pos[0] - my_pos[0]) + abs(old_pos[1] - my_pos[1])) > 2 else 0
         if ghost_dist > 2:  
             e_evaluation += cycle_penalty
         if ghost_dist_f < 2 and scared_enemy == 1: 
             e_evaluation -= 75
         evaluation = a_evaluation + c_evaluation * scared_enemy + e_evaluation
-        flee = 0
 
         # Debugging
         # if e_evaluation < 0:
@@ -605,27 +572,26 @@ class OmniReflexCaptureAgent(CaptureAgent):
         #if ghost_dist <= 3:
         #if special_movement:
         #print(f"{str(scared_enemy):>6} "f"{a_evaluation:>7.2f} "f"{c_evaluation:>7.2f} "f"{e_evaluation:>7.2f} "f"{dead_end_penalty:>6.2f} "f"{ghost_dist:>6.2f} "f"{ghost_dist_f:>6.2f} "f"{str(action):>10} "f"{evaluation:>7.2f} "f"{str(my_pos):>12} "f"{str(old_pos):>12} "f"{cycle_penalty:>6.2f} "f"{str(special_movement):>6} " f"{distances}")
-
+        
+        flee = 0
         if self.flee_timer > 0: # We have already decided to flee - execute
             # This is decided by the food risk tradeoff - roughly - if we carry a lot we flee.
             flee =  - 1
             if self.on_home_ground(game_state):
-                flee = -self.flee_timer # reset flee behaviour
-            #safety_bool = 1
+                flee = -self.flee_timer
             evaluation = b_evaluation + c_evaluation * scared_enemy + e_evaluation
 
         # Value settings for the chase scenario
         carrying = game_state.get_agent_state(self.index).num_carrying
         if (self.chase_timer > 3 and scared_time < 1 and e_scared_time < 2) or (self.chase_timer > 3 and e_scared_time < 2 and carrying > 2): 
-            #print("homebound")
             evaluation = d_evaluation + c_evaluation * scared_enemy + e_evaluation * (carrying + 1)
             if self.on_home_ground(game_state):
                 chase_bool = -self.chase_timer
                 side_reset = True
+        # Debug 2
         #print(f"{a_evaluation:>7.2f} "f"{b_evaluation:>5.1f} "f"{d_evaluation:>7.2f} "f"{c_evaluation:>7.2f} "f"{e_evaluation:>7.2f} "f"{ghost_dist:>6.2f} "f"{ghost_dist_f:>6.2f} "f"{str(action):>10} "f"{evaluation:>7.2f} "f"{str(my_pos):>12} "f"{str(old_pos):>12} "f"{cycle_penalty:>6.2f} "f"{str(special_movement):>6} " f"{distances}"f"{best_target}")
         #print(f"{a_evaluation:>7.2f} "f"{d_evaluation:>7.2f} "f"{c_evaluation:>7.2f} "f"{e_evaluation:>7.2f} "f"{dead_end_penalty:>6.2f} "f"{ghost_dist:>6.2f} "f"{str(action):>7} "f"{evaluation:>7.2f} "f"{str(my_pos):>10} "f"{str(old_pos):>10} "f"{cycle_penalty:>6.2f} "f"{str(special_movement):>6} " f"{distances}")
-        # Add fix for ghost on heels - pill search or reset to defense for about 10+ turns (how to ensure this? - use min)
-        return evaluation, safety_bool, chase_bool, flee, side_reset, two_ghoster  # call defensive
+        return evaluation, safety_bool, chase_bool, flee, side_reset, two_ghoster
     
     def get_defensive_features(self, game_state, action):
         features = util.Counter()
@@ -906,51 +872,45 @@ class OmniReflexCaptureAgent(CaptureAgent):
         
         return self.patrol_point
 
-
     def choose_action(self, game_state):
-        #print(game_state) % walls, . = food, G Ghost, o pill, 
-        #integrate defense logic
         actions = game_state.get_legal_actions(self.index)
-        #print(actions) ['North', 'South', 'Stop']
         
-        # Check if we're scared (opponent ate capsule) - defensive agent should attack
+        # If scared - defense switch to offense
         my_scared_timer = game_state.get_agent_state(self.index).scared_timer
         if not self.offense and my_scared_timer > 5:
-            # Temporarily switch to offense while scared
             print(f"Agent {self.index}: Scared! Switching to attack mode for {my_scared_timer} moves")
             self.switch = max(self.switch, my_scared_timer)
         
         # Determine which strategy to use based on role and switch state
         # Offensive agent: use offense unless switch > 0 (then defend)
         # Defensive agent: use defense unless switch > 0 (then attack)
-        use_offensive = (self.offense and not self.switch > 0) or (not self.offense and self.switch > 0)
-        
+        use_offensive = (self.offense and not self.switch > 0) or (not self.offense and self.switch > 0)      
         if use_offensive:
-            # Use offensive logic
             results = {a: self.offensive(game_state, a) for a in actions}
             values = {a: results[a][0] for a in actions}
         else:
-            # Use defensive logic
             features_dict = {a: self.get_defensive_features(game_state, a) for a in actions}
             weights_dict = {a: self.get_defensive_weights(game_state, a) for a in actions}
-            # Recalculate values using feature-weight evaluation
+            # Use weights for feature weight evaluation
             values = {a: features_dict[a] * weights_dict[a] for a in actions}
             results = {a: (values[a], 0) for a in actions}
 
-        # You can profile your evaluation time by uncommenting these lines
-        # start = time.time()
-        # print 'eval time for agent %d: %.4f' % (self.index, time.time() - start)
         max_value = max(values.values())
         best_actions = [a for a in actions if values[a] == max_value]
         chosen_action = random.choice(best_actions)    
-        # Handle offensive agent timers and state updates
+        
+        
         if use_offensive:
-            chosen_safety_bool = results[chosen_action][1] # Is continuing offense risky? negative if yes
-            chase_bool = results[chosen_action][2] # chase_bool
-            self.flee_timer += results[chosen_action][3] # How long should we flee
-            side_reset = results[chosen_action][4] # Should we stay on our side for some time?
+            # Unpack the offense values and various potential timers
+            # 0 = evaluated value | 1 = should we flee ? (Negative if yes) | 2 = Were we chased ? (1 = yes)
+            # 3 = Flee timer | 4 = Should we defend for a while ? (1 = yes) | 5 = Are both enemies ghosts?
+            chosen_safety_bool = results[chosen_action][1]
+            chase_bool = results[chosen_action][2]
+            self.flee_timer += results[chosen_action][3]
+            side_reset = results[chosen_action][4]
             two_ghoster = results[chosen_action][5]
             if two_ghoster:
+                # Timer for niche cases in which we consider special moves such as going for the pellet
                 self.two_ghost = 5
             else:
                 if self.two_ghost > 0:
@@ -967,7 +927,7 @@ class OmniReflexCaptureAgent(CaptureAgent):
                 self.flee_timer = 10
                 print("decided to flee because food")
         
-        # Decrement switch timer for both offensive and defensive agents
+        # Control switch timer for both offensive and defensive agents
         if self.switch > 0:
             self.switch -= 1
             if self.switch == 0:
@@ -979,29 +939,18 @@ class OmniReflexCaptureAgent(CaptureAgent):
                 print(f"[SWITCH] Agent {self.index}: Switch expires in {self.switch} turns (offense={self.offense})")
             elif self.switch <= 3:
                 print(f"[SWITCH] Agent {self.index}: Switch expiring soon ({self.switch} turns left)")
-        food_left = len(self.get_food(game_state).as_list())
-        # if self.chase_timer > 0:
-        #     print(best_actions)
-        if food_left <= 2:
-            best_dist = 9999 # improve logic or switch to defense
-            best_action = None
-            for action in actions:
-                successor = self.get_successor(game_state, action)
-                pos2 = successor.get_agent_position(self.index)
-                dist = self.get_maze_distance(self.start, pos2)
-                if dist < best_dist:
-                    best_action = action
-                    best_dist = dist
-            return best_action
+        
+        # Recent position queue handling - used to avoid jitter movement
         cur_pos = game_state.get_agent_state(self.index).get_position()
         food_carry = game_state.get_agent_state(self.index).num_carrying
         if food_carry != self.carrying:
+            # Reset recent positions if we collected food -> tolerate repeat movement briefly
             self.carrying = food_carry
             self.recent_positions = []
         if len(self.recent_positions) > 6:
             self.recent_positions.pop(0)
-
         self.recent_positions.append(cur_pos)
+
         return random.choice(best_actions)
     
     def get_successor(self, game_state, action):
