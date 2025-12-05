@@ -666,30 +666,46 @@ class OmniReflexCaptureAgent(CaptureAgent):
             evaluation = evaluation_b + eat_reward # chase & cutoff
         return evaluation, 0 # evaluation, various values
 
+
+
     def choose_action(self, game_state):
         #print(game_state) % walls, . = food, G Ghost, o pill, 
         #integrate defense logic
         actions = game_state.get_legal_actions(self.index)
         #print(actions) ['North', 'South', 'Stop']
-        if self.offense and not self.switch > 0:
-            # eval, safety, chase, flee
+        
+        # Check if we're scared (opponent ate capsule) - defensive agent should attack
+        my_scared_timer = game_state.get_agent_state(self.index).scared_timer
+        if not self.offense and my_scared_timer > 5:
+            # Temporarily switch to offense while scared
+            print(f"Agent {self.index}: Scared! Switching to attack mode for {my_scared_timer} moves")
+            self.switch = max(self.switch, my_scared_timer)
+        
+        # Determine which strategy to use based on role and switch state
+        # Offensive agent: use offense unless switch > 0 (then defend)
+        # Defensive agent: use defense unless switch > 0 (then attack)
+        use_offensive = (self.offense and not self.switch > 0) or (not self.offense and self.switch > 0)
+        
+        if use_offensive:
+            # Use offensive logic
             results = {a: self.offensive(game_state, a) for a in actions}
             values = {a: results[a][0] for a in actions}
-
         else:
-            results = {a: self.defensive(game_state, a) for a in actions}
-            values = {a: results[a][0] for a in actions}
-            if self.switch == 1:
-                self.recent_positions = []
-                print("Back to attacking")
+            # Use defensive logic
+            features_dict = {a: self.get_defensive_features(game_state, a) for a in actions}
+            weights_dict = {a: self.get_defensive_weights(game_state, a) for a in actions}
+            # Recalculate values using feature-weight evaluation
+            values = {a: features_dict[a] * weights_dict[a] for a in actions}
+            results = {a: (values[a], 0) for a in actions}
 
         # You can profile your evaluation time by uncommenting these lines
         # start = time.time()
         # print 'eval time for agent %d: %.4f' % (self.index, time.time() - start)
         max_value = max(values.values())
         best_actions = [a for a in actions if values[a] == max_value]
-        chosen_action = random.choice(best_actions)
-        if self.offense and not self.switch > 0:
+        chosen_action = random.choice(best_actions)    
+        # Handle offensive agent timers and state updates
+        if use_offensive:
             chosen_safety_bool = results[chosen_action][1] # Is continuing offense risky? negative if yes
             chase_bool = results[chosen_action][2] # chase_bool
             self.flee_timer += results[chosen_action][3] # How long should we flee
@@ -706,14 +722,20 @@ class OmniReflexCaptureAgent(CaptureAgent):
             self.chase_timer += chase_bool
             if self.chase_timer == 3 and chase_bool == 1:
                 print("chased -> flee")
-                if game_state.get_agent_state(self.index).scared_timer > 0 and game_state.get_agent_state(self.index).num_carrying < 3:
+                if self.chase_timer == 3 and chase_bool == 1 and game_state.get_agent_state(self.index).scared_timer > 0:
                     print("not fleeing yet - scared")
             if chosen_safety_bool < 0 and self.flee_timer < 2:
                 self.flee_timer = 10
                 print("decided to flee because food")
-        else:
-            if self.offense:
-                self.switch -= 1
+        
+        # Decrement switch timer for both offensive and defensive agents
+        if self.switch > 0:
+            self.switch -= 1
+            if self.switch == 0:
+                if self.offense:
+                    print("Back to attacking")
+                else:
+                    print("Back to defending")
         food_left = len(self.get_food(game_state).as_list())
         # if self.chase_timer > 0:
         #     print(best_actions)
