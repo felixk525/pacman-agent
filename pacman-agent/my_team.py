@@ -170,8 +170,6 @@ class OmniReflexCaptureAgent(CaptureAgent):
             return depth_penalty
         return 0
 
-# 100 / distance **2 -> distance = 4 -> 
-
     def ghost_distance(self, game_state, multiple=False):
         enemies = self.get_opponents(game_state)
         my_pos = game_state.get_agent_state(self.index).get_position()
@@ -231,7 +229,7 @@ class OmniReflexCaptureAgent(CaptureAgent):
                 scaled = estimate / threat_factor
 
             # multiple mode
-            results.append((scaled, index))
+            results.append((round(scaled,3), index))
             # single mode
             if scaled < best_estimate:
                 best_estimate = scaled
@@ -241,6 +239,8 @@ class OmniReflexCaptureAgent(CaptureAgent):
             # sort by distance (closest first)
             results.sort(key=lambda t: t[0])
             return results, best_index
+        #if best_estimate == 0:
+            #print(f"{best_estimate}, {scaled}, {estimate}, {threat_factor}")
         return best_estimate, best_index
 
     def home_border_x(self, game_state):
@@ -461,15 +461,10 @@ class OmniReflexCaptureAgent(CaptureAgent):
 
         return positions
 
-
-
     def offensive(self, game_state, action):
-        # Problem with pincer scenarios and no deadend scenarios
-        # Add pincerdetection / better ghost avoidance
         # add y reset entry after defense recovery switch (urgent)
         # add pill search consideration in chase scenario (urgent)
-        # add consideration for cross dead ends - simply use accessible fields (urgent - check)
-        # with capsule deeper deadlocks are better - one time opportunity
+        # urgent fix d_evaluation - replace with closest field dist?
         old_pos = game_state.get_agent_state(self.index).get_position()
         successor = self.get_successor(game_state, action)
         my_pos = successor.get_agent_state(self.index).get_position()
@@ -486,7 +481,7 @@ class OmniReflexCaptureAgent(CaptureAgent):
             if self.get_maze_distance(my_pos, invad_pos) <= 3:
                 side_reset = True
         
-        x, y = old_pos
+        x, y = my_pos
         if action == "Stop": # Stop penalty
             stop_penalty = 100
         # Closest food distance
@@ -505,7 +500,7 @@ class OmniReflexCaptureAgent(CaptureAgent):
 
         # Check whether the enemy is scared
         e_scared_time = game_state.get_agent_state(e_index).scared_timer
-        if e_scared_time > 3:
+        if e_scared_time > 1:
             scared_enemy = 0
             #print("ignore enemies")
         else:
@@ -545,6 +540,7 @@ class OmniReflexCaptureAgent(CaptureAgent):
             two_ghoster = False
 
         special_movement = False
+        best_target = None
         if self.flee_timer > 0 or (self.chase_timer > 3 and e_scared_time < 2):
             if (self.chase_timer > 3 and e_scared_time < 2):
                 #print("considering special move 1")
@@ -563,7 +559,6 @@ class OmniReflexCaptureAgent(CaptureAgent):
 
                         # target candidates
                         targets = border_cells + capsules
-                        best_target = None
                         best_margin = -9999
 
                         # Evaluate each target
@@ -586,7 +581,12 @@ class OmniReflexCaptureAgent(CaptureAgent):
         if not special_movement:
             c_evaluation -= sum(10 / ((d + 1) ** 2) for d in distances) * ((dead_end_penalty + 1) ** 0.5)
 
-        d_evaluation = -min_team_distance
+        if self.red:
+            d_evaluation = -x#-min_team_distance
+        else:
+            walls = game_state.get_walls()
+            width = walls.width
+            d_evaluation = -(width - x)
         e_evaluation = -150 if (abs(old_pos[0] - my_pos[0]) + abs(old_pos[1] - my_pos[1])) > 2 else 0
         if ghost_dist > 2:  
             e_evaluation += cycle_penalty
@@ -603,7 +603,7 @@ class OmniReflexCaptureAgent(CaptureAgent):
         #if ghost_dist == 1 and action != "Stop" or (abs(old_pos[0] - my_pos[0]) + abs(old_pos[1] - my_pos[1])) > 2:
         #if ghost_dist <= 3:
         #if special_movement:
-        #print(f"{str(scared_enemy):>6} "f"{a_evaluation:>7.2f} "f"{c_evaluation:>7.2f} "f"{e_evaluation:>7.2f} "f"{dead_end_penalty:>6.2f} "f"{ghost_dist:>6.2f} "f"{ghost_dist_f:>6.2f} "f"{str(action):>10} "f"{evaluation:>7.2f} "f"{str(my_pos):>12} "f"{str(old_pos):>12} "f"{cycle_penalty:>6.2f} "f"{str(special_movement):>6}")
+        #print(f"{str(scared_enemy):>6} "f"{a_evaluation:>7.2f} "f"{c_evaluation:>7.2f} "f"{e_evaluation:>7.2f} "f"{dead_end_penalty:>6.2f} "f"{ghost_dist:>6.2f} "f"{ghost_dist_f:>6.2f} "f"{str(action):>10} "f"{evaluation:>7.2f} "f"{str(my_pos):>12} "f"{str(old_pos):>12} "f"{cycle_penalty:>6.2f} "f"{str(special_movement):>6} " f"{distances}")
 
         if self.flee_timer > 0: # We have already decided to flee - execute
             # This is decided by the food risk tradeoff - roughly - if we carry a lot we flee.
@@ -616,11 +616,13 @@ class OmniReflexCaptureAgent(CaptureAgent):
         # Value settings for the chase scenario
         carrying = game_state.get_agent_state(self.index).num_carrying
         if (self.chase_timer > 3 and scared_time < 1 and e_scared_time < 2) or (self.chase_timer > 3 and e_scared_time < 2 and carrying > 2): 
-            evaluation = d_evaluation + c_evaluation * scared_enemy + e_evaluation * carrying
+            #print("homebound")
+            evaluation = d_evaluation + c_evaluation * scared_enemy + e_evaluation * (carrying + 1)
             if self.on_home_ground(game_state):
                 chase_bool = -self.chase_timer
                 side_reset = True
-
+        #print(f"{a_evaluation:>7.2f} "f"{b_evaluation:>5.1f} "f"{d_evaluation:>7.2f} "f"{c_evaluation:>7.2f} "f"{e_evaluation:>7.2f} "f"{ghost_dist:>6.2f} "f"{ghost_dist_f:>6.2f} "f"{str(action):>10} "f"{evaluation:>7.2f} "f"{str(my_pos):>12} "f"{str(old_pos):>12} "f"{cycle_penalty:>6.2f} "f"{str(special_movement):>6} " f"{distances}"f"{best_target}")
+        #print(f"{a_evaluation:>7.2f} "f"{d_evaluation:>7.2f} "f"{c_evaluation:>7.2f} "f"{e_evaluation:>7.2f} "f"{dead_end_penalty:>6.2f} "f"{ghost_dist:>6.2f} "f"{str(action):>7} "f"{evaluation:>7.2f} "f"{str(my_pos):>10} "f"{str(old_pos):>10} "f"{cycle_penalty:>6.2f} "f"{str(special_movement):>6} " f"{distances}")
         # Add fix for ghost on heels - pill search or reset to defense for about 10+ turns (how to ensure this? - use min)
         return evaluation, safety_bool, chase_bool, flee, side_reset, two_ghoster  # call defensive
     
