@@ -257,6 +257,8 @@ class OmniReflexCaptureAgent(CaptureAgent):
         team_foods = self.get_food_you_are_defending(game_state).as_list()
         if not foods:
             return 999 # we want to go home
+        if not team_foods:
+            return 999
         food_enemies = len(foods)
         food_team = len(team_foods)
         if food_team == 0:
