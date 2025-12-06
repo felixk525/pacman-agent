@@ -1,8 +1,3 @@
-"""
-Pacman agent using Stable-Baselines3 with Gym wrapper
-Train using PPO, A2C, or DQN algorithms
-"""
-
 import random
 import numpy as np
 import contest.util as util
@@ -28,23 +23,12 @@ except ImportError:
 
 def create_team(first_index, second_index, is_red,
                 first='SB3Agent', second='DefensiveReflexAgent', num_training=0):
-    """
-    Create team with SB3 agent for offense and reflex agent for defense
-    """
     first_agent = eval(first)(first_index, num_training=num_training)
     second_agent = eval(second)(second_index)
     return [first_agent, second_agent]
 
 
-##########
-# Agents #
-##########
-
 class SB3Agent(CaptureAgent):
-    """
-    Agent that uses Stable-Baselines3 (PPO, A2C, or DQN) for decision making
-    """
-    
     def __init__(self, index, algorithm='PPO', num_training=0, time_for_computing=.1):
         super().__init__(index, time_for_computing)
         
@@ -66,7 +50,6 @@ class SB3Agent(CaptureAgent):
             print(f"Agent {index}: Falling back to random policy (SB3 not installed)")
     
     def register_initial_state(self, game_state):
-        """Initialize agent at game start"""
         super().register_initial_state(game_state)
         self.start = game_state.get_agent_position(self.index)
         
@@ -87,7 +70,6 @@ class SB3Agent(CaptureAgent):
         self.env.reset()
     
     def _load_or_create_model(self):
-        """Load existing model or create new one"""
         import os
         
         model_path = f'sb3_model_{self.algorithm_name}_agent_{self.index}.zip'
@@ -111,7 +93,6 @@ class SB3Agent(CaptureAgent):
             self._create_new_model(algorithm_class)
     
     def _create_new_model(self, algorithm_class):
-        """Create a new SB3 model"""
         print(f"Agent {self.index}: Creating new {self.algorithm_name} model")
         
         # Hyperparameters for each algorithm
@@ -157,9 +138,6 @@ class SB3Agent(CaptureAgent):
             self.model = PPO('MlpPolicy', self.env, verbose=1)
     
     def choose_action(self, game_state):
-        """
-        Choose action using SB3 model
-        """
         # Update environment's game state
         self.env.game_state = game_state
         
@@ -193,7 +171,6 @@ class SB3Agent(CaptureAgent):
         return direction
     
     def final(self, game_state):
-        """Called at end of each game"""
         self.episodes_so_far += 1
         
         score = self.get_score(game_state)
@@ -219,11 +196,9 @@ class SB3Agent(CaptureAgent):
         super().final(game_state)
     
     def is_in_training(self):
-        """Check if still in training mode"""
         return self.episodes_so_far < self.num_training
     
     def save_model(self):
-        """Save the trained model"""
         if self.model is not None:
             model_path = f'sb3_model_{self.algorithm_name}_agent_{self.index}.zip'
             try:
@@ -234,10 +209,6 @@ class SB3Agent(CaptureAgent):
 
 
 class DefensiveReflexAgent(CaptureAgent):
-    """
-    Simple defensive reflex agent (reused from baseline)
-    """
-    
     def __init__(self, index, time_for_computing=.1):
         super().__init__(index, time_for_computing)
         self.start = None

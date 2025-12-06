@@ -1,8 +1,3 @@
-"""
-OpenAI Gym wrapper for Pacman Capture-the-Flag environment
-Allows training with Stable-Baselines3 and other RL libraries
-"""
-
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
@@ -10,27 +5,12 @@ from typing import Optional, Tuple
 
 from contest.game import Directions
 import contest.util as util
-import random
 
 
 class PacmanCaptureEnv(gym.Env):
-    """
-    OpenAI Gym environment wrapper for Pacman Capture-the-Flag
-    
-    This wrapper allows you to train agents using standard RL libraries
-    like Stable-Baselines3, RLlib, etc.
-    """
-    
     metadata = {'render_modes': ['human', 'rgb_array'], 'render_fps': 30}
     
     def __init__(self, agent_index: int, game_state=None, capture_agent=None, reset_func=None):
-        """
-        Args:
-            agent_index: Index of the agent (0 or 2 for red team)
-            game_state: Initial game state (will be set during reset)
-            capture_agent: Reference to CaptureAgent for helper methods
-            reset_func: Function to call to get a new game state on reset
-        """
         super(PacmanCaptureEnv, self).__init__()
         
         self.agent_index = agent_index
@@ -63,10 +43,6 @@ class PacmanCaptureEnv(gym.Env):
         }
     
     def _get_observation(self, game_state) -> np.ndarray:
-        """
-        Extract observation features from game state
-        Returns normalized feature vector
-        """
         if game_state is None or self.capture_agent is None:
             return np.zeros(8, dtype=np.float32)
         
@@ -120,9 +96,6 @@ class PacmanCaptureEnv(gym.Env):
         return features
     
     def _get_reward(self, prev_state, curr_state) -> float:
-        """
-        Calculate reward for transition from prev_state to curr_state
-        """
         if prev_state is None or curr_state is None or self.capture_agent is None:
             return 0.0
         
@@ -186,10 +159,6 @@ class PacmanCaptureEnv(gym.Env):
         return reward
     
     def _get_terminal_reward(self, game_state) -> float:
-        """
-        Calculate terminal reward based on game outcome (win/loss/tie)
-        Called when episode ends
-        """
         if game_state is None or self.capture_agent is None:
             return 0.0
         
@@ -206,15 +175,6 @@ class PacmanCaptureEnv(gym.Env):
             return -50.0
     
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, dict]:
-        """
-        Execute one step in the environment
-        
-        Args:
-            action: Integer action (0-4)
-            
-        Returns:
-            observation, reward, terminated, truncated, info
-        """
         if self.game_state is None or self.capture_agent is None:
             raise RuntimeError("Environment not initialized. Call reset() first.")
         
@@ -286,16 +246,9 @@ class PacmanCaptureEnv(gym.Env):
         return observation, reward, terminated, truncated, info
     
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None) -> Tuple[np.ndarray, dict]:
-        """
-        Reset the environment to initial state
-        
-        Returns:
-            observation, info
-        """
         super().reset(seed=seed)
         
         # Reset will be called by the game engine with a new game_state
-        # If reset_func is provided, use it to get fresh state
         if self.reset_func is not None:
             self.game_state = self.reset_func()
         
@@ -310,7 +263,6 @@ class PacmanCaptureEnv(gym.Env):
         return observation, info
     
     def _is_terminal(self, game_state) -> bool:
-        """Check if game state is terminal"""
         if game_state is None:
             return False
         
@@ -319,23 +271,11 @@ class PacmanCaptureEnv(gym.Env):
         return food_remaining <= 2
     
     def render(self):
-        """Render the environment (handled by Pacman's graphics)"""
         pass
     
     def close(self):
-        """Clean up resources"""
         pass
 
 
 def make_pacman_env(agent_index: int, capture_agent=None):
-    """
-    Factory function to create Pacman Gym environment
-    
-    Args:
-        agent_index: Index of the agent
-        capture_agent: Reference to CaptureAgent
-        
-    Returns:
-        PacmanCaptureEnv instance
-    """
     return PacmanCaptureEnv(agent_index=agent_index, capture_agent=capture_agent)
