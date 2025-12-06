@@ -456,11 +456,10 @@ class OmniReflexCaptureAgent(CaptureAgent):
         if action == "Stop": # Stop penalty
             stop_penalty = 100
         # Closest food distance
-        min_distance = min([self.get_maze_distance(my_pos, food) for food in foods])
-        old_min_distance = min([self.get_maze_distance(old_pos, food) for food in foods])
-        team_foods = self.get_food_you_are_defending(game_state).as_list()
-        # Closest food distance for food of own team
-        min_team_distance = min([self.get_maze_distance(my_pos, food) for food in team_foods])
+        if foods:
+            min_distance = min([self.get_maze_distance(my_pos, food) for food in foods])
+        else:
+            min_distance = 0
         # Detect dead ends up to 6 deep
         dead_end_penalty = self.local_mobility(successor, old_pos, my_pos, max_depth=7) # max depth detected - 1 x 9 -> 54 limit in this case
         # Current closest ghost distance and the ghosts index & future state ghost distance
