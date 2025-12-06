@@ -1,0 +1,19 @@
+# Requirements for Pacman RL agents with OpenAI Gym & Stable-Baselines3
+
+# Core RL library
+gymnasium>=0.29.0
+
+# Stable-Baselines3 for PPO, A2C, DQN
+stable-baselines3>=2.0.0
+
+# Deep learning backend (PyTorch)
+torch>=2.0.0
+
+# Numerical computing
+numpy>=1.24.0
+
+# Optional: TensorBoard for monitoring
+tensorboard>=2.14.0
+
+# Optional: Additional SB3 features
+sb3-contrib>=2.0.0
